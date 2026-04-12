@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Kendacar Foundation · Giving Scenarios</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --forest:    #2D5A3D;
+    --forest-lt: #3D7A54;
+    --forest-bg: #F2F6F3;
+    --gold:      #B8902A;
+    --gold-lt:   #D4AC4A;
+    --gold-bg:   #FBF7ED;
+    --ink:       #1A1A18;
+    --ink-mid:   #4A4A45;
+    --ink-muted: #7A7A74;
+    --rule:      #DDD9D0;
+    --white:     #FFFFFF;
+    --radius:    6px;
+  }
+
+  body {
+    font-family: 'DM Sans', sans-serif;
+    font-weight: 300;
+    background: #F7F5F0;
+    color: var(--ink);
+    min-height: 100vh;
+    padding: 48px 24px 72px;
+  }
+
+  .page {
+    max-width: 860px;
+    margin: 0 auto;
+    background: var(--white);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+
+  /* Header */
+  .header {
+    background: var(--forest);
+    padding: 40px 48px 36px;
+    position: relative;
+    overflow: hidden;
+  }
+  .header::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      -45deg,
+      transparent,
+      transparent 40px,
+      rgba(255,255,255,0.018) 40px,
+      rgba(255,255,255,0.018) 41px
+    );
+  }
+  .header-eyebrow {
+    font-family: 'DM Sans', sans-serif;
+    font-weight: 400;
+    font-size: 11px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.55);
+    margin-bottom: 10px;
+    position: relative;
+  }
+  .header-title {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 34px;
+    font-weight: 500;
+    color: #fff;
+    line-height: 1.2;
+    position: relative;
+    margin-bottom: 6px;
+  }
+  .header-subtitle {
+    font-family: 'Cormorant Garamond', serif;
+    font-style: italic;
+    font-size: 17px;
+    color: rgba(255,255,255,0.65);
+    position: relative;
+  }
+  .header-rule {
+    position: absolute;
+    bottom: 0; left: 48px; right: 48px;
+    height: 2px;
+    background: linear-gradient(90deg, var(--gold-lt), transparent);
+  }
+
+  /* Body */
+  .body { padding: 40px 48px 48px; }
+
+  .section-label {
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    margin-bottom: 14px;
+  }
+
+  /* Assumption bar */
+  .assumption-bar {
+    background: var(--forest-bg);
+    border: 1px solid rgba(45,90,61,0.18);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    margin-bottom: 32px;
+    flex-wrap: wrap;
+  }
+  .assumption-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .assumption-item label {
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--forest);
+  }
+  .assumption-item .val {
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--ink);
+  }
+  .divider-v {
+    width: 1px;
+    height: 32px;
+    background: rgba(45,90,61,0.2);
+  }
+  .slider-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+    min-width: 180px;
+  }
+  .slider-group label {
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--forest);
+    white-space: nowrap;
+  }
+  input[type=range] {
+    flex: 1;
+    accent-color: var(--forest);
+    cursor: pointer;
+  }
+  .slider-group .rate-out {
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--forest);
+    min-width: 42px;
+  }
+
+  /* Legend */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px 24px;
+    margin-bottom: 12px;
+  }
+  .leg {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    color: var(--ink-muted);
+  }
+  .leg-sq {
+    width: 12px; height: 12px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+  .leg-dash {
+    width: 18px; height: 0;
+    border-top: 2px dashed currentColor;
+    flex-shrink: 0;
+  }
+
+  /* Chart wrapper */
+  .chart-wrap {
+    position: relative;
+    width: 100%;
+    height: 340px;
+    margin-bottom: 42px;
+  }
+
+  /* Section divider */
+  .section-divider {
+    border: none;
+    border-top: 1px solid var(--rule);
+    margin: 0 0 32px;
+  }
+
+  /* Summary table */
+  .summary-wrap {
+    overflow-x: auto;
+    border-radius: var(--radius);
+    border: 1px solid var(--rule);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  thead th {
+    background: var(--forest);
+    color: rgba(255,255,255,0.9);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: .06em;
+    padding: 11px 16px;
+    text-align: right;
+  }
+  thead th:first-child {
+    text-align: left;
+    color: rgba(255,255,255,0.55);
+    font-size: 10px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+  }
+  thead th.c1 { color: #6DCFA4; }
+  thead th.c2 { color: #82B8F5; }
+  thead th.c3 { color: #F5C460; }
+  thead th.c4 { color: #BEB1F5; }
+  tbody tr:nth-child(even) td { background: #FAFAF8; }
+  tbody tr:hover td { background: var(--forest-bg); }
+  td {
+    padding: 11px 16px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  tr:last-child td { border-bottom: none; }
+  td:first-child {
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--ink);
+  }
+  .td-sub {
+    font-size: 11px;
+    color: var(--ink-muted);
+    margin-top: 2px;
+  }
+  .td-num {
+    text-align: right;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+  .badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 400;
+    padding: 3px 9px;
+    border-radius: 4px;
+  }
+
+  /* Footer */
+  .footer {
+    border-top: 1px solid var(--rule);
+    padding: 18px 48px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .footer p {
+    font-size: 11px;
+    color: var(--ink-muted);
+  }
+  .footer-mark {
+    font-family: 'Cormorant Garamond', serif;
+    font-size: 14px;
+    color: var(--forest);
+    font-style: italic;
+  }
+
+  @media (max-width: 600px) {
+    .header { padding: 28px 24px 24px; }
+    .body { padding: 28px 20px 36px; }
+    .footer { padding: 16px 20px; }
+    .header-title { font-size: 26px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <div class="header">
+    <p class="header-eyebrow">Kendacar Foundation · Family Philanthropy Planning</p>
+    <h1 class="header-title">Corpus Growth &amp; Giving Scenarios</h1>
+    <p class="header-subtitle">What could the foundation look like at four different starting sizes?</p>
+    <div class="header-rule"></div>
+  </div>
+
+  <div class="body">
+
+    <div class="assumption-bar">
+      <div class="assumption-item">
+        <label>Distribution rate</label>
+        <div class="val">5% annually</div>
+      </div>
+      <div class="divider-v"></div>
+      <div class="assumption-item">
+        <label>Grantees modeled</label>
+        <div class="val">15 organizations</div>
+      </div>
+      <div class="divider-v"></div>
+      <div class="assumption-item">
+        <label>New contributions</label>
+        <div class="val">None assumed</div>
+      </div>
+      <div class="divider-v"></div>
+      <div class="slider-group">
+        <label>Market return</label>
+        <input type="range" min="4" max="11" step="0.5" value="7" id="rSlider" />
+        <span class="rate-out" id="rVal">7.0%</span>
+      </div>
+    </div>
+
+    <p class="section-label">40-Year Corpus Growth &amp; Annual Giving (dashed)</p>
+
+    <div class="legend">
+      <span class="leg"><span class="leg-sq" style="background:#1D9E75;"></span>$5M start</span>
+      <span class="leg"><span class="leg-sq" style="background:#185FA5;"></span>$9M start</span>
+      <span class="leg"><span class="leg-sq" style="background:#BA7517;"></span>$15M start</span>
+      <span class="leg"><span class="leg-sq" style="background:#6B3FBF;"></span>$30M start</span>
+      <span class="leg"><span class="leg-dash" style="color:#999;"></span>Annual giving (5% of corpus)</span>
+    </div>
+
+    <div class="chart-wrap">
+      <canvas id="growthChart" role="img" aria-label="40-year corpus growth lines for four starting corpus sizes with dashed lines showing annual 5% giving requirement"></canvas>
+    </div>
+
+    <hr class="section-divider" />
+    <p class="section-label">Scenario Summary</p>
+
+    <div class="summary-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Metric</th>
+            <th class="c1">$5M start</th>
+            <th class="c2">$9M start</th>
+            <th class="c3">$15M start</th>
+            <th class="c4">$30M start</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody"></tbody>
+      </table>
+    </div>
+
+  </div>
+
+  <div class="footer">
+    <p>Model assumes 5% annual distribution (IRS minimum for private foundations) · No additional contributions · Returns net of 0.5% estimated investment fees</p>
+    <span class="footer-mark">Kendacar Foundation</span>
+  </div>
+
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+const STARTS  = [5e6, 9e6, 15e6, 30e6];
+const COLORS  = ['#1D9E75','#185FA5','#BA7517','#6B3FBF'];
+const LABELS  = Array.from({length:41},(_,i) => i === 0 ? 'Now' : 'Yr '+i);
+
+const fmtM = v => v >= 1e6
+  ? '$' + (v/1e6).toFixed(1) + 'M'
+  : '$' + Math.round(v/1e3) + 'K';
+
+const fmtK = v => {
+  const k = Math.round(v/1e3);
+  return '$' + k.toLocaleString() + 'K';
+};
+
+function project(start, rate, years) {
+  let c = start;
+  const arr = [c];
+  for (let y = 1; y <= years; y++) {
+    c = c * (1 + rate) - c * 0.05;
+    arr.push(c);
+  }
+  return arr;
+}
+
+function staffInfo(startM) {
+  if (startM <=  5) return { label: 'Volunteer board only',   bg: '#EAF3DE', color: '#3B6D11' };
+  if (startM <=  9) return { label: 'Part-time admin (0.5 FTE)', bg: '#FBF7ED', color: '#85500B' };
+  if (startM <= 15) return { label: '1–2 FTE',                bg: '#E6F1FB', color: '#185FA5' };
+  return                    { label: '3–5 FTE',               bg: '#EEEDFE', color: '#533AB7' };
+}
+
+function buildDatasets(rate) {
+  const sets = [];
+  STARTS.forEach((s, i) => {
+    const corpus = project(s, rate, 40);
+    const giving = corpus.map(v => v * 0.05);
+    sets.push({ label: fmtM(s)+' corpus', data: corpus,
+      borderColor: COLORS[i], backgroundColor: 'transparent',
+      borderWidth: 2.5, pointRadius: 0, tension: 0.35 });
+    sets.push({ label: fmtM(s)+' giving', data: giving,
+      borderColor: COLORS[i], backgroundColor: 'transparent',
+      borderWidth: 1.5, borderDash: [5,4], pointRadius: 0, tension: 0.35 });
+  });
+  return sets;
+}
+
+function buildTable(rate) {
+  const data = STARTS.map(s => {
+    const c = project(s, rate, 40);
+    return {
+      corpus20: c[20], giving20: c[20]*0.05, grant20: c[20]*0.05/15,
+      corpus40: c[40], giving40: c[40]*0.05, grant40: c[40]*0.05/15,
+      staff: staffInfo(s/1e6)
+    };
+  });
+
+  const rows = [
+    { key:'corpus20', label:'Corpus at year 20', sub:'before distributions' },
+    { key:'giving20', label:'Annual giving · year 20', sub:'5% of corpus' },
+    { key:'grant20',  label:'Per-org grant · year 20', sub:'÷ 15 grantees' },
+    { key:'corpus40', label:'Corpus at year 40', sub:'before distributions' },
+    { key:'giving40', label:'Annual giving · year 40', sub:'5% of corpus' },
+    { key:'grant40',  label:'Per-org grant · year 40', sub:'÷ 15 grantees' },
+    { key:'staff',    label:'Recommended staffing', sub:'based on starting corpus' },
+  ];
+
+  const tbody = document.getElementById('tableBody');
+  tbody.innerHTML = '';
+  rows.forEach(row => {
+    const tr = document.createElement('tr');
+    let html = `<td><div>${row.label}</div><div class="td-sub">${row.sub}</div></td>`;
+    data.forEach((d, i) => {
+      if (row.key === 'staff') {
+        const s = d.staff;
+        html += `<td class="td-num"><span class="badge" style="background:${s.bg};color:${s.color};">${s.label}</span></td>`;
+      } else {
+        const v = d[row.key];
+        const txt = (row.key.includes('corpus')) ? fmtM(v) : fmtK(v);
+        html += `<td class="td-num" style="color:${COLORS[i]};">${txt}</td>`;
+      }
+    });
+    tr.innerHTML = html;
+    tbody.appendChild(tr);
+  });
+}
+
+let rate = 0.07;
+const ctx = document.getElementById('growthChart').getContext('2d');
+const chart = new Chart(ctx, {
+  type: 'line',
+  data: { labels: LABELS, datasets: buildDatasets(rate) },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        filter: item => item.datasetIndex % 2 === 0,
+        callbacks: {
+          title: c => 'Year ' + c[0].dataIndex,
+          label: c => {
+            const corpus = c.raw;
+            const giving = corpus * 0.05;
+            const perOrg = giving / 15;
+            const name = ['$5M','$9M','$15M','$30M'][Math.floor(c.datasetIndex/2)];
+            return [
+              name + ' start  →  corpus: ' + fmtM(corpus),
+              '  Annual giving (5%): ' + fmtM(giving),
+              '  Per org (÷15): ' + fmtK(perOrg)
+            ];
+          }
+        }
+      }
+    },
+    scales: {
+      x: {
+        ticks: { autoSkip:true, maxTicksLimit:11, color:'#7A7A74', font:{size:11, family:"'DM Sans', sans-serif"} },
+        grid: { color:'rgba(0,0,0,0.06)' }
+      },
+      y: {
+        ticks: { callback: v => fmtM(v), color:'#7A7A74', font:{size:11, family:"'DM Sans', sans-serif"} },
+        grid: { color:'rgba(0,0,0,0.06)' }
+      }
+    }
+  }
+});
+
+buildTable(rate);
+
+document.getElementById('rSlider').addEventListener('input', function() {
+  rate = parseFloat(this.value) / 100;
+  document.getElementById('rVal').textContent = parseFloat(this.value).toFixed(1) + '%';
+  const ds = buildDatasets(rate);
+  ds.forEach((d, i) => { chart.data.datasets[i].data = d.data; });
+  chart.update();
+  buildTable(rate);
+});
+</script>
+</body>
+</html>
