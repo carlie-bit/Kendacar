@@ -432,7 +432,7 @@ export default function KendacarDashboard() {
         <div style={{ textAlign: "right" }}>
           <div style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "#A8D5D5", marginBottom: 4, fontFamily: "'Cormorant Garamond', serif" }}>Total Giving All Time</div>
           <div style={{ fontSize: 36, fontFamily: "'Cormorant Garamond', serif", fontWeight: 700 }}>{fmt(totalAllTime)}</div>
-          <div style={{ fontSize: 12, color: "#A8D5D5", marginTop: 2 }}>175 grants across 67 organizations</div>
+          <div style={{ fontSize: 12, color: "#A8D5D5", marginTop: 2 }}>175 grants across 67 organizations</div>           <a href="./kendacar_scenarios.html" target="_blank" style={{             display: "inline-block", marginTop: 14, padding: "8px 18px",             background: "rgba(255,255,255,0.12)", border: "1px solid rgba(255,255,255,0.3)",             borderRadius: 6, color: "#fff", fontSize: 12, fontFamily: "'DM Sans', sans-serif",             fontWeight: 500, textDecoration: "none", letterSpacing: "0.04em"           }}>             📊 Giving Scenarios →           </a>
         </div>
       </div>
 
