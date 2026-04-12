@@ -53,6 +53,10 @@ const ORG_CATEGORIES = {
   "St. John's Northwestern Military Academy": "Education",
   "Impact 100": "Education",
   "MCC Foundation": "Education",
+  "Hoover Institution": "Education",
+  "CASA of McHenry County": "Children & Youth",
+  "Habitat for Humanity IRC": "Community Development",
+  "Village of Port Austin": "Community Development",
   "Max McGraw Wildlife Foundation": "Environment & Wildlife",
   "Enviromental Learning Center": "Environment & Wildlife",
   "Indian River Land Trust": "Environment & Wildlife",
@@ -83,6 +87,13 @@ const ORG_CATEGORIES = {
 };
 
 const GRANTS = [
+  { id: 176, year: 2026, org: "CASA of McHenry County", amount: 32855 },
+  { id: 177, year: 2026, org: "Habitat for Humanity IRC", amount: 10000 },
+  { id: 178, year: 2026, org: "The Hope for Families Center", amount: 10000 },
+  { id: 179, year: 2026, org: "Village of Port Austin", amount: 62500 },
+  { id: 180, year: 2026, org: "Indian River Habitat for Humanity", amount: 10000 },
+  { id: 181, year: 2025, org: "Northern Illinois Food Bank", amount: 10000 },
+  { id: 182, year: 2025, org: "Hoover Institution", amount: 10000 },
   { id: 1, year: 2025, org: "Big Brothers Big Sisters of McHenry County", amount: 50000 },
   { id: 2, year: 2025, org: "Parla", amount: 40000 },
   { id: 3, year: 2025, org: "Casa of McHenry County", amount: 25000 },
@@ -411,7 +422,6 @@ export default function KendacarDashboard() {
 
   return (
     <div style={{ minHeight: "100vh", background: "#F0F8F8", fontFamily: "'DM Sans', sans-serif", color: "#111D1D" }}>
-
       {/* Header */}
       <div style={{ background: "#0B6E6E", color: "#fff", padding: "32px 40px 28px", display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 20 }}>
         <div>
@@ -427,7 +437,6 @@ export default function KendacarDashboard() {
       </div>
 
       <div style={{ padding: "28px 40px", maxWidth: 1140, margin: "0 auto" }}>
-
         {/* Filters */}
         <div style={{ background: "#fff", border: "1px solid #C8E8E8", borderRadius: 12, padding: "16px 20px", display: "flex", gap: 20, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 24 }}>
           <div style={{ fontSize: 12, fontFamily: "'Cormorant Garamond', serif", letterSpacing: "0.1em", textTransform: "uppercase", color: "#5A8080", alignSelf: "center", paddingBottom: 2 }}>Filter</div>
@@ -614,9 +623,8 @@ export default function KendacarDashboard() {
         )}
 
         <div style={{ marginTop: 36, textAlign: "center", fontSize: 11, color: "#7A9898", fontFamily: "'Cormorant Garamond', serif", letterSpacing: "0.08em" }}>
-          KENDACAR FOUNDATION &middot; CONFIDENTIAL &middot; FOR FAMILY USE ONLY
+          KENDACAR FOUNDATION \u00b7 CONFIDENTIAL \u00b7 FOR FAMILY USE ONLY
         </div>
-
       </div>
     </div>
   );
