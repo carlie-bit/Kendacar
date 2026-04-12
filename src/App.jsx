@@ -427,7 +427,7 @@ export default function KendacarDashboard() {
         <div>
           <div style={{ fontSize: 11, letterSpacing: "0.18em", textTransform: "uppercase", color: "#A8D5D5", marginBottom: 6, fontFamily: "'Cormorant Garamond', serif" }}>Family Philanthropy</div>
           <h1 style={{ margin: 0, fontSize: 36, fontFamily: "'Cormorant Garamond', serif", fontWeight: 700, lineHeight: 1.1 }}>Kendacar Foundation</h1>
-          <div style={{ fontSize: 13, color: "#A8D5D5", marginTop: 6 }}>Grant History & Giving Overview â 2001 to Present</div>
+          <div style={{ fontSize: 13, color: "#A8D5D5", marginTop: 6 }}>Grant History & Giving Overview - 2001 to Present</div>
         </div>
         <div style={{ textAlign: "right" }}>
           <div style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "#A8D5D5", marginBottom: 4, fontFamily: "'Cormorant Garamond', serif" }}>Total Giving All Time</div>
