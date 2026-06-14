@@ -116,22 +116,48 @@ async function publicInsert(table, payload) {
   return true;
 }
 
+// Upload a photo to the grantee-photos bucket (admin only); returns its public URL.
+async function uploadPhoto(session, file, org) {
+  const safe = (org || "grantee").toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40);
+  const ext = (file.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const path = safe + "/" + Date.now() + "-" + Math.random().toString(36).slice(2, 8) + "." + ext;
+  const res = await fetch(SUPABASE_URL + "/storage/v1/object/grantee-photos/" + path, {
+    method: "POST",
+    headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + session.access_token, "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  if (!res.ok) throw new Error("Photo upload failed (" + res.status + "). " + (await res.text().catch(() => "")));
+  return SUPABASE_URL + "/storage/v1/object/public/grantee-photos/" + path;
+}
+
 // ---- auth context ----
 const AuthContext = createContext(null);
 const useAuth = () => useContext(AuthContext);
 
 // Pull every display table in parallel and shape it like the fallback data.
 async function fetchLiveData() {
-  const [grants, donations, assets, settings, notes] = await Promise.all([
+  const [grants, donations, assets, settings, notes, updates] = await Promise.all([
     sb("grants?select=id,year,org,amount,category&order=year.desc,amount.desc"),
     sb("donations?select=id,year,donor,amount&order=year.desc"),
     sb("investment_assets?select=id,name,value,sort_order&order=sort_order"),
     sb("settings?select=key,value"),
-    sb("grantee_notes?select=org,contact,website,note"),
+    sb("grantee_notes?select=org,display_name,contact,contact_role,contact_email,website,description,community,note"),
+    sb("grantee_updates?select=id,org,title,body,author,photos,created_at&order=created_at.desc"),
   ]);
   const setMap = Object.fromEntries(settings.map(s => [s.key, s.value]));
   const noteMap = {};
-  notes.forEach(n => { noteMap[n.org] = { contact: n.contact, website: n.website, note: n.note }; });
+  notes.forEach(n => { noteMap[n.org] = {
+    displayName: n.display_name, contact: n.contact, contactRole: n.contact_role,
+    contactEmail: n.contact_email, website: n.website, description: n.description,
+    community: n.community, note: n.note,
+  }; });
+  const updateMap = {};
+  updates.forEach(u => {
+    (updateMap[u.org] = updateMap[u.org] || []).push({
+      id: u.id, title: u.title, body: u.body, author: u.author,
+      photos: Array.isArray(u.photos) ? u.photos : [], created_at: u.created_at,
+    });
+  });
   return {
     grants: grants.map(g => ({
       id: g.id, year: Number(g.year), org: g.org, amount: Number(g.amount),
@@ -145,6 +171,7 @@ async function fetchLiveData() {
       composition: assets.map(a => ({ id: a.id, name: a.name, value: Number(a.value) })),
     },
     granteeNotes: noteMap,
+    granteeUpdates: updateMap,
   };
 }
 
@@ -166,7 +193,7 @@ const ORG_CATEGORIES = {
   "Miss B Learning Bsse": "Children & Youth",
   "Alexander Leigh Center for Autism": "Children & Youth",
   "Northern Illinois Center of Autism": "Children & Youth",
-  "Parla": "Domestic Violence",
+  "Parla": "Community Development",
   "Huron County Coalition Against Domestic Violence": "Domestic Violence",
   "Home of the Sparrow": "Domestic Violence",
   "Northern Illinois Food Bank": "Food & Hunger",
@@ -478,6 +505,7 @@ const FALLBACK_DATA = {
   donations: DONATIONS_RECEIVED,
   investments: FALLBACK_INVESTMENTS,
   granteeNotes: FALLBACK_GRANTEE_NOTES,
+  granteeUpdates: {},
 };
 
 const DataContext = createContext(FALLBACK_DATA);
@@ -1411,10 +1439,11 @@ function buildGranteeIndex(grants) {
 }
 
 function GranteesDirectory({ goGrantee, narrow }) {
-  const { grants } = useData();
+  const { grants, granteeNotes } = useData();
   const index = useMemo(() => buildGranteeIndex(grants), [grants]);
+  const nameOf = o => (granteeNotes[o.org] && granteeNotes[o.org].displayName) || o.org;
   const [q, setQ] = useState("");
-  const list = index.filter(o => o.org.toLowerCase().includes(q.toLowerCase()));
+  const list = index.filter(o => nameOf(o).toLowerCase().includes(q.toLowerCase()) || o.org.toLowerCase().includes(q.toLowerCase()));
   return (
     <div style={{ maxWidth: 1140, margin: "0 auto", padding: narrow ? "28px 16px" : "36px 40px" }}>
       <SectionTitle title="Grantees" sub={index.length + " organizations, ranked by total support received"} />
@@ -1433,7 +1462,7 @@ function GranteesDirectory({ goGrantee, narrow }) {
             }}>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 11, color: "#A8B8B8", fontWeight: 600 }}>#{i + 1}</div>
-                <div style={{ fontSize: 14, fontWeight: 600, color: "#1F3A38", lineHeight: 1.25 }}>{o.org}</div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#1F3A38", lineHeight: 1.25 }}>{nameOf(o)}</div>
                 <div style={{ fontSize: 12, color: "#7C8C8A", marginTop: 4 }}>{o.count} grant{o.count > 1 ? "s" : ""} &middot; {o.firstYear}&ndash;{o.lastYear}</div>
               </div>
               <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
@@ -1449,11 +1478,114 @@ function GranteesDirectory({ goGrantee, narrow }) {
   );
 }
 
+const fmtDate = s => { try { return new Date(s).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }); } catch { return ""; } };
+
+// Inline editor for a grantee's profile (website, contact, description).
+function GranteeProfileEditor({ org, note, exists, onDone }) {
+  const { session, setSession } = useAuth();
+  const { refresh } = useData();
+  const [f, setF] = useState({
+    display_name: note?.displayName || "", website: note?.website || "",
+    contact: note?.contact || "", contact_role: note?.contactRole || "",
+    contact_email: note?.contactEmail || "", community: note?.community || "",
+    description: note?.description || "",
+  });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const set = (k, v) => setF({ ...f, [k]: v });
+
+  async function save() {
+    setBusy(true); setErr("");
+    const payload = {};
+    Object.keys(f).forEach(k => { payload[k] = f[k].trim() === "" ? null : f[k].trim(); });
+    try {
+      if (exists) await authedWrite(session, setSession, "PATCH", "grantee_notes?org=eq." + encodeURIComponent(org), payload);
+      else await authedWrite(session, setSession, "POST", "grantee_notes", { org, ...payload });
+      await refresh(); onDone();
+    } catch (e) { setErr(e.message); setBusy(false); }
+  }
+
+  const fld = (label, key, ph) => (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontFamily: FONT_BODY, fontWeight: 700, fontSize: 12, color: INK, marginBottom: 4 }}>{label}</div>
+      <input value={f[key]} onChange={e => set(key, e.target.value)} placeholder={ph} style={{ ...formInput, fontSize: 14, padding: "9px 12px" }} />
+    </div>
+  );
+
+  return (
+    <Card style={{ padding: 22, marginBottom: 24, background: "#FBF4EC" }}>
+      <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, marginBottom: 14 }}>Edit profile</div>
+      {fld("Display name", "display_name", "Full organization name")}
+      {fld("Website", "website", "https://…")}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        {fld("Key contact", "contact", "Name")}
+        {fld("Contact role", "contact_role", "e.g. Executive Director")}
+        {fld("Contact email", "contact_email", "name@org.org")}
+        {fld("Home community", "community", "e.g. Port Austin, MI")}
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontFamily: FONT_BODY, fontWeight: 700, fontSize: 12, color: INK, marginBottom: 4 }}>Description</div>
+        <textarea value={f.description} onChange={e => set("description", e.target.value)} rows={3} placeholder="What this organization does" style={{ ...formInput, fontSize: 14, padding: "9px 12px", resize: "vertical" }} />
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <MiniButton kind="save" onClick={save} disabled={busy}>{busy ? "Saving…" : "Save profile"}</MiniButton>
+        <MiniButton kind="cancel" onClick={onDone} disabled={busy}>Cancel</MiniButton>
+      </div>
+      {err && <div style={{ color: "#B5451B", fontSize: 12, marginTop: 8 }}>{err}</div>}
+    </Card>
+  );
+}
+
+// Composer to post a dated update with photos.
+function UpdateComposer({ org, onDone }) {
+  const { session, setSession } = useAuth();
+  const { refresh } = useData();
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [files, setFiles] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function post() {
+    if (!body.trim() && !title.trim() && files.length === 0) { setErr("Add a note or a photo."); return; }
+    setBusy(true); setErr("");
+    try {
+      const urls = [];
+      for (const file of files) urls.push(await uploadPhoto(session, file, org));
+      await authedWrite(session, setSession, "POST", "grantee_updates", {
+        org, title: title.trim() || null, body: body.trim() || null,
+        author: session.email, photos: urls,
+      });
+      await refresh(); onDone();
+    } catch (e) { setErr(e.message); setBusy(false); }
+  }
+
+  return (
+    <Card style={{ padding: 22, marginBottom: 18, background: "#FBF4EC" }}>
+      <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, marginBottom: 12 }}>Post an update</div>
+      <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Title (optional)" style={{ ...formInput, fontSize: 14, padding: "9px 12px", marginBottom: 10 }} />
+      <textarea value={body} onChange={e => setBody(e.target.value)} rows={3} placeholder="What's the latest with this grantee?" style={{ ...formInput, fontSize: 14, padding: "9px 12px", resize: "vertical", marginBottom: 10 }} />
+      <input type="file" accept="image/*" multiple onChange={e => setFiles(Array.from(e.target.files || []))} style={{ fontSize: 13, fontFamily: FONT_BODY, marginBottom: 6 }} />
+      {files.length > 0 && <div style={{ fontSize: 12, color: "#7C8C8A", marginBottom: 10 }}>{files.length} photo{files.length > 1 ? "s" : ""} selected</div>}
+      <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+        <MiniButton kind="save" onClick={post} disabled={busy}>{busy ? "Posting…" : "Post update"}</MiniButton>
+        <MiniButton kind="cancel" onClick={onDone} disabled={busy}>Cancel</MiniButton>
+      </div>
+      {err && <div style={{ color: "#B5451B", fontSize: 12, marginTop: 8 }}>{err}</div>}
+    </Card>
+  );
+}
+
 function GranteeDetail({ org, setView, goGrantee, narrow }) {
-  const { grants, granteeNotes } = useData();
+  const { grants, granteeNotes, granteeUpdates } = useData();
+  const { signedIn, session, setSession } = useAuth();
+  const { refresh } = useData();
   const index = useMemo(() => buildGranteeIndex(grants), [grants]);
   const rec = index.find(o => o.org === org);
   const note = granteeNotes[org];
+  const updates = granteeUpdates[org] || [];
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [composing, setComposing] = useState(false);
   if (!rec) {
     return (
       <div style={{ maxWidth: 1140, margin: "0 auto", padding: "36px 40px" }}>
@@ -1470,27 +1602,43 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
     <div style={{ maxWidth: 1140, margin: "0 auto", padding: narrow ? "24px 16px" : "32px 40px" }}>
       <button onClick={() => setView("grantees")} style={{ background: "none", border: "none", color: TEAL, cursor: "pointer", fontSize: 13, fontWeight: 600, marginBottom: 18, fontFamily: "'Nunito Sans', sans-serif" }}>&larr; All grantees</button>
 
-      {/* Header */}
-      <div style={{ background: "#fff", border: "1px solid #EFE7DD", borderLeft: "5px solid " + c, borderRadius: 12, padding: narrow ? "22px" : "28px 32px", marginBottom: 24 }}>
+      {signedIn && editingProfile && <GranteeProfileEditor org={org} note={note} exists={!!note} onDone={() => setEditingProfile(false)} />}
+
+      {/* Header / profile */}
+      <div style={{ background: "#fff", border: "1px solid " + LINE, borderLeft: "5px solid " + c, borderRadius: 18, padding: narrow ? "22px" : "28px 32px", marginBottom: 24 }}>
         <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 16, alignItems: "flex-start" }}>
-          <div>
-            <span style={{ background: c + "18", color: c, borderRadius: 20, padding: "3px 12px", fontSize: 11, fontWeight: 600 }}>{rec.category}</span>
-            <h2 style={{ fontFamily: "'Fredoka', serif", fontWeight: 700, fontSize: narrow ? 26 : 32, margin: "12px 0 4px", color: "#1F3A38" }}>{rec.org}</h2>
-            <div style={{ fontSize: 13, color: "#7C8C8A" }}>Grantee #{rank} by total support &middot; supported across {rec.yearCount} year{rec.yearCount > 1 ? "s" : ""}</div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <span style={{ background: c + "18", color: c, borderRadius: 20, padding: "3px 12px", fontSize: 11, fontWeight: 700 }}>{rec.category}</span>
+              {note?.community && <span style={{ background: SUN + "26", color: "#9A7B1E", borderRadius: 20, padding: "3px 12px", fontSize: 11, fontWeight: 700 }}>{note.community}</span>}
+            </div>
+            <h2 style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: narrow ? 26 : 32, margin: "12px 0 4px", color: INK, lineHeight: 1.05 }}>{(note && note.displayName) || rec.org}</h2>
+            <div style={{ fontSize: 13, color: "#7C8C8A", fontFamily: FONT_BODY }}>Grantee #{rank} by total support &middot; supported across {rec.yearCount} year{rec.yearCount > 1 ? "s" : ""}</div>
             {note && note.website && (
-              <a href={note.website} target="_blank" rel="noopener noreferrer" style={{ display: "inline-block", marginTop: 10, color: TEAL, fontSize: 13, fontWeight: 600, textDecoration: "none" }}>Visit website &rarr;</a>
+              <a href={note.website} target="_blank" rel="noopener noreferrer" style={{ display: "inline-block", marginTop: 10, color: TEAL, fontSize: 13.5, fontWeight: 700, textDecoration: "none", fontFamily: FONT_BODY }}>Visit website &rarr;</a>
             )}
           </div>
           <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 11, fontFamily: "'Fredoka', serif", letterSpacing: "0.12em", textTransform: "uppercase", color: "#7C8C8A" }}>Total Received</div>
-            <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 700, fontSize: 40, color: TEAL, lineHeight: 1 }}>{fmt(rec.total)}</div>
+            <div style={{ fontSize: 11, fontFamily: FONT_BODY, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "#7C8C8A" }}>Total Received</div>
+            <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 40, color: TEAL, lineHeight: 1 }}>{fmt(rec.total)}</div>
             <div style={{ fontSize: 12, color: "#7C8C8A", marginTop: 4 }}>{rec.count} grant{rec.count > 1 ? "s" : ""} &middot; {rec.firstYear}&ndash;{rec.lastYear}</div>
+            {signedIn && !editingProfile && <div style={{ marginTop: 10 }}><MiniButton kind="edit" onClick={() => setEditingProfile(true)}>Edit profile</MiniButton></div>}
           </div>
         </div>
-        {note && (note.contact || note.note) && (
-          <div style={{ marginTop: 20, paddingTop: 18, borderTop: "1px solid #F3ECE3" }}>
-            {note.contact && <div style={{ fontSize: 13, color: "#1F3A38", fontWeight: 600, marginBottom: 6 }}>{note.contact}</div>}
-            {note.note && <div style={{ fontSize: 13, color: "#7C8C8A", lineHeight: 1.55, maxWidth: 720 }}>{note.note}</div>}
+        {note && (note.description || note.contact) && (
+          <div style={{ marginTop: 20, paddingTop: 18, borderTop: "1px solid " + LINE }}>
+            {note.description && <div style={{ fontSize: 14.5, color: INK, lineHeight: 1.6, maxWidth: 740, fontFamily: FONT_BODY, marginBottom: note.contact ? 12 : 0 }}>{note.description}</div>}
+            {note.contact && (
+              <div style={{ fontSize: 13.5, color: "#5E6E6C", fontFamily: FONT_BODY }}>
+                <strong style={{ color: INK }}>{note.contact}</strong>{note.contactRole ? " · " + note.contactRole : ""}
+                {note.contactEmail && <> · <a href={"mailto:" + note.contactEmail} style={{ color: TEAL, fontWeight: 700, textDecoration: "none" }}>{note.contactEmail}</a></>}
+              </div>
+            )}
+          </div>
+        )}
+        {signedIn && !note && !editingProfile && (
+          <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px dashed " + LINE, fontSize: 13, color: "#9B8E80" }}>
+            No profile yet. <button onClick={() => setEditingProfile(true)} style={{ background: "none", border: "none", color: TEAL, fontWeight: 700, cursor: "pointer", fontSize: 13 }}>Add website, contact &amp; description &rarr;</button>
           </div>
         )}
       </div>
@@ -1542,6 +1690,43 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
             </table>
           </div>
         </Card>
+      </div>
+
+      {/* Updates feed */}
+      <div style={{ marginTop: 28 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
+          <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 24, color: INK }}>Updates</div>
+          {signedIn && !composing && <MiniButton kind="edit" onClick={() => setComposing(true)}>+ Post an update</MiniButton>}
+        </div>
+
+        {signedIn && composing && <UpdateComposer org={org} onDone={() => setComposing(false)} />}
+
+        {updates.length === 0 && !composing && (
+          <Card style={{ padding: "28px 24px", textAlign: "center", color: "#9B8E80", fontFamily: FONT_BODY, fontSize: 14 }}>
+            No updates yet.{signedIn ? " Post the first one — a note and a few photos." : ""}
+          </Card>
+        )}
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {updates.map(u => (
+            <Card key={u.id} style={{ padding: narrow ? "20px" : "24px 26px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+                {u.title && <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, color: INK }}>{u.title}</div>}
+                <div style={{ fontSize: 12, color: "#9B8E80", fontFamily: FONT_BODY }}>{fmtDate(u.created_at)}{u.author ? " · " + u.author : ""}</div>
+              </div>
+              {u.body && <div style={{ fontSize: 14.5, color: INK, lineHeight: 1.6, marginTop: u.title ? 8 : 0, fontFamily: FONT_BODY, whiteSpace: "pre-wrap" }}>{u.body}</div>}
+              {u.photos && u.photos.length > 0 && (
+                <div style={{ display: "grid", gridTemplateColumns: narrow ? "repeat(2,1fr)" : "repeat(auto-fill, minmax(150px, 1fr))", gap: 10, marginTop: 14 }}>
+                  {u.photos.map((src, i) => (
+                    <a key={i} href={src} target="_blank" rel="noopener noreferrer" style={{ display: "block" }}>
+                      <img src={src} alt="" loading="lazy" style={{ width: "100%", height: 140, objectFit: "cover", borderRadius: 12, border: "1px solid " + LINE, display: "block" }} />
+                    </a>
+                  ))}
+                </div>
+              )}
+            </Card>
+          ))}
+        </div>
       </div>
     </div>
   );
