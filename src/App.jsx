@@ -105,6 +105,17 @@ async function authedWrite(session, setSession, method, path, body) {
   return true;
 }
 
+// A public form submission (anyone may insert into the form tables).
+async function publicInsert(table, payload) {
+  const res = await fetch(REST + table, {
+    method: "POST",
+    headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + SUPABASE_KEY, "Content-Type": "application/json", Prefer: "return=minimal" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error("Submission failed (" + res.status + "). " + (await res.text().catch(() => "")));
+  return true;
+}
+
 // ---- auth context ----
 const AuthContext = createContext(null);
 const useAuth = () => useContext(AuthContext);
@@ -484,7 +495,44 @@ const CONTRIBUTION_URL  = "";   // e.g. "https://forms.gle/yyyyyyyy"
 //  CONSTANTS & HELPERS
 // =============================================================================
 
-const TEAL = "#0B6E6E";
+const TEAL = "#0B6E6E";          // anchor
+const SOFT_TEAL = "#2FA39B";
+const CORAL = "#F2885E";         // warmth
+const SUN = "#F4C95D";           // accent
+const INK = "#1F3A38";
+const PAPER = "#FFF8F2";
+const LINE = "#EFE7DD";
+const FONT_DISPLAY = "'Fredoka', sans-serif";
+const FONT_BODY = "'Nunito Sans', sans-serif";
+const FONT_ACCENT = "'Caveat', cursive";
+
+// The "hop mark" — a little bounce ending on a coral landing.
+function HopMark({ size = 30, light = false }) {
+  const dash = light ? "#BFE0DE" : SOFT_TEAL;
+  const dot = light ? PAPER : TEAL;
+  const land = light ? SUN : CORAL;
+  return (
+    <svg width={size} height={size} viewBox="0 0 72 72" fill="none" style={{ flexShrink: 0 }}>
+      <path d="M8 56 Q22 30 36 40 Q50 50 64 16" stroke={dash} strokeWidth="3" strokeDasharray="2 6" strokeLinecap="round" />
+      <circle cx="8" cy="56" r="4.5" fill={dot} />
+      <circle cx="36" cy="40" r="5.5" fill={dot} />
+      <circle cx="64" cy="16" r="8" fill={land} />
+    </svg>
+  );
+}
+
+// Wordmark: hop mark + lowercase "kendacar" in Fredoka.
+function Wordmark({ size = 22, light = false, sub = true }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
+      <HopMark size={size * 1.5} light={light} />
+      <span style={{ display: "inline-flex", flexDirection: "column", lineHeight: 1 }}>
+        <span style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: size, color: light ? PAPER : TEAL, letterSpacing: "-0.5px" }}>kendacar</span>
+        {sub && <span style={{ fontFamily: FONT_BODY, fontWeight: 700, fontSize: size * 0.4, letterSpacing: "3px", color: light ? "#BFE0DE" : "#A9968A", marginTop: 2 }}>FOUNDATION</span>}
+      </span>
+    </span>
+  );
+}
 
 const CAT_COLORS = {
   "Children & Youth":         "#0B6E6E",
@@ -540,10 +588,10 @@ function useWindowWidth() {
 
 function StatCard({ label, value, sub, accent }) {
   return (
-    <div style={{ background: "#fff", border: "1px solid #D8EEEE", borderRadius: 12, padding: "20px 24px", borderTop: "3px solid " + (accent || TEAL) }}>
-      <div style={{ fontSize: 11, fontFamily: "'Cormorant Garamond', serif", letterSpacing: "0.12em", textTransform: "uppercase", color: "#5A8080", marginBottom: 6 }}>{label}</div>
-      <div style={{ fontSize: 28, fontWeight: 700, color: "#111D1D", fontFamily: "'Cormorant Garamond', serif", lineHeight: 1 }}>{value}</div>
-      {sub && <div style={{ fontSize: 12, color: "#7A9898", marginTop: 4, fontFamily: "'DM Sans', sans-serif" }}>{sub}</div>}
+    <div style={{ background: "#fff", border: "1px solid #EFE7DD", borderRadius: 18, padding: "20px 24px", borderTop: "3px solid " + (accent || TEAL) }}>
+      <div style={{ fontSize: 11, fontFamily: FONT_BODY, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "#7C8C8A", marginBottom: 6 }}>{label}</div>
+      <div style={{ fontSize: 30, fontWeight: 600, color: "#1F3A38", fontFamily: FONT_DISPLAY, lineHeight: 1 }}>{value}</div>
+      {sub && <div style={{ fontSize: 12, color: "#7C8C8A", marginTop: 4, fontFamily: "'Nunito Sans', sans-serif" }}>{sub}</div>}
     </div>
   );
 }
@@ -551,10 +599,10 @@ function StatCard({ label, value, sub, accent }) {
 function FilterSelect({ label, value, onChange, options }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      <label style={{ fontSize: 10, fontFamily: "'Cormorant Garamond', serif", letterSpacing: "0.1em", textTransform: "uppercase", color: "#5A8080" }}>{label}</label>
+      <label style={{ fontSize: 10, fontFamily: "'Fredoka', serif", letterSpacing: "0.1em", textTransform: "uppercase", color: "#7C8C8A" }}>{label}</label>
       <select value={value} onChange={e => onChange(e.target.value)} style={{
-        border: "1px solid #C0DEDE", borderRadius: 6, padding: "7px 28px 7px 10px", fontSize: 13,
-        fontFamily: "'DM Sans', sans-serif", color: "#111D1D", background: "#F5FBFB", appearance: "none",
+        border: "1px solid #E2D7C9", borderRadius: 6, padding: "7px 28px 7px 10px", fontSize: 13,
+        fontFamily: "'Nunito Sans', sans-serif", color: "#1F3A38", background: "#FBF4EC", appearance: "none",
         backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%235A8080'/%3E%3C/svg%3E\")",
         backgroundRepeat: "no-repeat", backgroundPosition: "right 10px center", cursor: "pointer", minWidth: 180,
       }}>
@@ -567,22 +615,22 @@ function FilterSelect({ label, value, onChange, options }) {
 const CustomTooltip = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null;
   return (
-    <div style={{ background: "#fff", border: "1px solid #D8EEEE", borderRadius: 8, padding: "10px 14px", fontSize: 13, fontFamily: "'DM Sans', sans-serif", boxShadow: "0 4px 12px rgba(0,0,0,0.08)" }}>
-      <div style={{ fontWeight: 600, marginBottom: 4, color: "#111D1D" }}>{label}</div>
+    <div style={{ background: "#fff", border: "1px solid #EFE7DD", borderRadius: 8, padding: "10px 14px", fontSize: 13, fontFamily: "'Nunito Sans', sans-serif", boxShadow: "0 4px 12px rgba(0,0,0,0.08)" }}>
+      <div style={{ fontWeight: 600, marginBottom: 4, color: "#1F3A38" }}>{label}</div>
       {payload.map((p, i) => <div key={i} style={{ color: p.color || TEAL }}>{fmt(p.value)}</div>)}
     </div>
   );
 };
 
 function Card({ children, style }) {
-  return <div style={{ background: "#fff", border: "1px solid #C8E8E8", borderRadius: 12, ...style }}>{children}</div>;
+  return <div style={{ background: "#fff", border: "1px solid #EFE7DD", borderRadius: 18, ...style }}>{children}</div>;
 }
 
 function SectionTitle({ title, sub }) {
   return (
     <div style={{ marginBottom: 20 }}>
-      <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 700, fontSize: 26, color: "#111D1D", lineHeight: 1.1 }}>{title}</div>
-      {sub && <div style={{ fontSize: 13, color: "#5A8080", marginTop: 6 }}>{sub}</div>}
+      <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 28, color: "#1F3A38", lineHeight: 1.1 }}>{title}</div>
+      {sub && <div style={{ fontSize: 13.5, color: "#7C8C8A", marginTop: 6, fontFamily: FONT_BODY }}>{sub}</div>}
     </div>
   );
 }
@@ -590,11 +638,11 @@ function SectionTitle({ title, sub }) {
 function PrimaryButton({ href, children, disabled }) {
   const base = {
     display: "inline-block", padding: "11px 22px", borderRadius: 8, fontSize: 14,
-    fontFamily: "'DM Sans', sans-serif", fontWeight: 600, textDecoration: "none", letterSpacing: "0.02em",
+    fontFamily: "'Nunito Sans', sans-serif", fontWeight: 600, textDecoration: "none", letterSpacing: "0.02em",
     border: "1px solid " + TEAL, cursor: disabled ? "default" : "pointer", transition: "all .15s",
   };
   if (disabled || !href) {
-    return <span style={{ ...base, background: "#EAF5F5", color: "#7A9898", borderColor: "#C8E8E8" }}
+    return <span style={{ ...base, background: "#F3ECE3", color: "#7C8C8A", borderColor: "#EFE7DD" }}
       title="Add your Google Form link in App.jsx to enable">{children} <span style={{ fontSize: 11 }}>(link coming)</span></span>;
   }
   return <a href={href} target="_blank" rel="noopener noreferrer" style={{ ...base, background: TEAL, color: "#fff" }}>{children}</a>;
@@ -607,8 +655,8 @@ function PrimaryButton({ href, children, disabled }) {
 const CATEGORY_LIST = Object.keys(CAT_COLORS);
 
 const inputStyle = {
-  border: "1px solid #C0DEDE", borderRadius: 6, padding: "6px 8px", fontSize: 13,
-  fontFamily: "'DM Sans', sans-serif", color: "#111D1D", background: "#fff", width: "100%",
+  border: "1px solid #E2D7C9", borderRadius: 6, padding: "6px 8px", fontSize: 13,
+  fontFamily: "'Nunito Sans', sans-serif", color: "#1F3A38", background: "#fff", width: "100%",
 };
 
 function EdInput({ value, onChange, type = "text", placeholder }) {
@@ -626,15 +674,15 @@ function EdSelect({ value, onChange, options }) {
 function MiniButton({ onClick, children, kind, disabled }) {
   const colors = {
     save:   { bg: TEAL, fg: "#fff", bd: TEAL },
-    cancel: { bg: "#fff", fg: "#5A8080", bd: "#C0DEDE" },
+    cancel: { bg: "#fff", fg: "#7C8C8A", bd: "#E2D7C9" },
     delete: { bg: "#fff", fg: "#B5451B", bd: "#E3C3B6" },
-    edit:   { bg: "#F5FBFB", fg: TEAL, bd: "#C8E8E8" },
-  }[kind] || { bg: "#fff", fg: TEAL, bd: "#C0DEDE" };
+    edit:   { bg: "#FBF4EC", fg: TEAL, bd: "#EFE7DD" },
+  }[kind] || { bg: "#fff", fg: TEAL, bd: "#E2D7C9" };
   return (
     <button onClick={onClick} disabled={disabled} style={{
       background: colors.bg, color: colors.fg, border: "1px solid " + colors.bd, borderRadius: 6,
       padding: "5px 11px", fontSize: 12, fontWeight: 600, cursor: disabled ? "default" : "pointer",
-      opacity: disabled ? 0.5 : 1, fontFamily: "'DM Sans', sans-serif",
+      opacity: disabled ? 0.5 : 1, fontFamily: "'Nunito Sans', sans-serif",
     }}>{children}</button>
   );
 }
@@ -670,7 +718,7 @@ function GrantEditRow({ row, onDone, narrow }) {
   }
 
   return (
-    <tr style={{ background: "#F0FAFA", borderBottom: "1px solid #C8E8E8" }}>
+    <tr style={{ background: "#F0FAFA", borderBottom: "1px solid #EFE7DD" }}>
       <td style={{ padding: "8px 12px" }}><EdInput type="number" value={year} onChange={setYear} /></td>
       <td style={{ padding: "8px 12px" }}><EdInput value={org} onChange={setOrg} placeholder="Organization" /></td>
       <td style={{ padding: "8px 12px" }}><EdSelect value={category} onChange={setCategory} options={CATEGORY_LIST} /></td>
@@ -717,7 +765,7 @@ function DonationEditRow({ row, onDone }) {
   }
 
   return (
-    <tr style={{ background: "#F0FAFA", borderBottom: "1px solid #C8E8E8" }}>
+    <tr style={{ background: "#F0FAFA", borderBottom: "1px solid #EFE7DD" }}>
       <td style={{ padding: "8px 12px" }}><EdInput type="number" value={year} onChange={setYear} /></td>
       <td style={{ padding: "8px 12px" }}><EdInput value={donor} onChange={setDonor} placeholder="Donor" /></td>
       <td style={{ padding: "8px 12px" }}><EdInput type="number" value={amount} onChange={setAmount} placeholder="Amount" /></td>
@@ -750,7 +798,7 @@ function SignInControl() {
 
   if (signedIn) {
     return (
-      <div style={{ fontSize: 12, color: "#7A9898", marginTop: 10 }}>
+      <div style={{ fontSize: 12, color: "#7C8C8A", marginTop: 10 }}>
         Signed in as {email} ·{" "}
         <button onClick={signOut} style={{ background: "none", border: "none", color: TEAL, cursor: "pointer", fontSize: 12, fontWeight: 600, textDecoration: "underline" }}>Sign out</button>
       </div>
@@ -759,7 +807,7 @@ function SignInControl() {
   if (!open) {
     return (
       <div style={{ marginTop: 10 }}>
-        <button onClick={() => setOpen(true)} style={{ background: "none", border: "none", color: "#9DB6B6", cursor: "pointer", fontSize: 11, letterSpacing: "0.06em" }}>Sign in to edit</button>
+        <button onClick={() => setOpen(true)} style={{ background: "none", border: "none", color: "#B2A793", cursor: "pointer", fontSize: 11, letterSpacing: "0.06em" }}>Sign in to edit</button>
       </div>
     );
   }
@@ -797,16 +845,15 @@ function NavBar({ view, setView, narrow }) {
   return (
     <div style={{ background: TEAL, color: "#fff", position: "sticky", top: 0, zIndex: 50, boxShadow: "0 2px 8px rgba(0,0,0,0.12)" }}>
       <div style={{ maxWidth: 1140, margin: "0 auto", padding: narrow ? "0 16px" : "0 40px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-        <button onClick={() => setView("pulse")} style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", padding: "14px 0", display: "flex", alignItems: "baseline", gap: 8 }}>
-          <span style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 700, fontSize: 20 }}>Kendacar</span>
-          <span style={{ fontSize: 10, letterSpacing: "0.18em", textTransform: "uppercase", color: "#A8D5D5" }}>Foundation</span>
+        <button onClick={() => setView("pulse")} style={{ background: "none", border: "none", cursor: "pointer", padding: "12px 0", display: "flex", alignItems: "center" }}>
+          <Wordmark size={21} light sub={false} />
         </button>
         <div style={{ display: "flex", gap: narrow ? 2 : 6, flexWrap: "wrap" }}>
           {items.map(it => (
             <button key={it.id} onClick={() => setView(it.id)} style={{
               background: active === it.id ? "rgba(255,255,255,0.16)" : "none",
-              border: "none", color: active === it.id ? "#fff" : "#CDEAEA",
-              fontFamily: "'DM Sans', sans-serif", fontWeight: active === it.id ? 600 : 400,
+              border: "none", color: active === it.id ? "#fff" : "#BFE0DE",
+              fontFamily: "'Nunito Sans', sans-serif", fontWeight: active === it.id ? 600 : 400,
               fontSize: 13, padding: narrow ? "10px 9px" : "10px 14px", borderRadius: 6, cursor: "pointer",
             }}>{it.label}</button>
           ))}
@@ -823,9 +870,9 @@ function NavBar({ view, setView, narrow }) {
 function FlowNode({ label, value, sub, big }) {
   return (
     <div style={{ flex: 1, minWidth: 150, textAlign: "center" }}>
-      <div style={{ fontSize: 11, fontFamily: "'Cormorant Garamond', serif", letterSpacing: "0.14em", textTransform: "uppercase", color: "#A8D5D5", marginBottom: 8 }}>{label}</div>
-      <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 700, fontSize: big ? 46 : 34, color: "#fff", lineHeight: 1 }}>{value}</div>
-      {sub && <div style={{ fontSize: 12, color: "#A8D5D5", marginTop: 8 }}>{sub}</div>}
+      <div style={{ fontSize: 11, fontFamily: "'Fredoka', serif", letterSpacing: "0.14em", textTransform: "uppercase", color: "#BFE0DE", marginBottom: 8 }}>{label}</div>
+      <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 700, fontSize: big ? 46 : 34, color: "#fff", lineHeight: 1 }}>{value}</div>
+      {sub && <div style={{ fontSize: 12, color: "#BFE0DE", marginTop: 8 }}>{sub}</div>}
     </div>
   );
 }
@@ -851,12 +898,13 @@ function PulseLanding({ setView, goGrantee, narrow }) {
       {/* Hero story flow */}
       <div style={{ background: "linear-gradient(135deg, #0B6E6E 0%, #0A5C5C 100%)", color: "#fff", padding: narrow ? "40px 20px 48px" : "56px 40px 60px" }}>
         <div style={{ maxWidth: 1040, margin: "0 auto" }}>
-          <div style={{ fontSize: 12, letterSpacing: "0.2em", textTransform: "uppercase", color: "#A8D5D5", marginBottom: 10, fontFamily: "'Cormorant Garamond', serif" }}>Family Philanthropy &middot; Est. 2001</div>
-          <h1 style={{ margin: 0, fontFamily: "'Cormorant Garamond', serif", fontWeight: 700, fontSize: narrow ? 32 : 42, lineHeight: 1.12, maxWidth: 760 }}>
-            A quarter-century of family giving, at a glance.
+          <div style={{ fontSize: 12, letterSpacing: "0.2em", textTransform: "uppercase", color: "#BFE0DE", marginBottom: 8, fontFamily: FONT_BODY, fontWeight: 800 }}>Family Philanthropy &middot; Since 2001</div>
+          <div style={{ fontFamily: FONT_ACCENT, fontWeight: 700, fontSize: narrow ? 34 : 44, color: SUN, lineHeight: 1, marginBottom: 4 }}>All the way through.</div>
+          <h1 style={{ margin: 0, fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: narrow ? 30 : 40, lineHeight: 1.12, maxWidth: 780 }}>
+            Helping local kids make it all the way to adulthood.
           </h1>
-          <p style={{ color: "#CDEAEA", fontSize: 15, marginTop: 14, maxWidth: 620, lineHeight: 1.55 }}>
-            The family contributes into the fund, the corpus is invested to grow, and each year a portion is granted out to the organizations the family cares about.
+          <p style={{ color: "#DCEFEC", fontSize: 15.5, marginTop: 14, maxWidth: 640, lineHeight: 1.6, fontFamily: FONT_BODY }}>
+            Kendacar gives quietly to the communities it calls home — backing the organizations that keep those places whole, and standing by the older teens stepping into adulthood. The family gives in, the corpus grows, and each year a portion goes out.
           </p>
 
           <div style={{ display: "flex", alignItems: "center", gap: narrow ? 4 : 16, marginTop: 40, flexWrap: narrow ? "wrap" : "nowrap" }}>
@@ -873,18 +921,18 @@ function PulseLanding({ setView, goGrantee, narrow }) {
         {/* Current giving cycle */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
           <SectionTitle title={cycleYear + " Giving Cycle"} sub={cycleGrants.length + " grants · " + fmt(cycleTotal) + " committed this cycle"} />
-          <button onClick={() => setView("grants")} style={{ background: "none", border: "none", color: TEAL, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'DM Sans', sans-serif" }}>View all grants &rarr;</button>
+          <button onClick={() => setView("grants")} style={{ background: "none", border: "none", color: TEAL, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Nunito Sans', sans-serif" }}>View all grants &rarr;</button>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "repeat(auto-fill, minmax(210px, 1fr))", gap: 14, marginBottom: 40 }}>
           {cycleGrants.map((g, i) => {
             const c = CAT_COLORS[g.category] || "#999";
             return (
               <button key={g.org + i} onClick={() => goGrantee(normalizeOrg(g.org))} style={{
-                textAlign: "left", background: "#fff", border: "1px solid #C8E8E8", borderLeft: "4px solid " + c,
-                borderRadius: 10, padding: "16px 18px", cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+                textAlign: "left", background: "#fff", border: "1px solid #EFE7DD", borderLeft: "4px solid " + c,
+                borderRadius: 10, padding: "16px 18px", cursor: "pointer", fontFamily: "'Nunito Sans', sans-serif",
               }}>
-                <div style={{ fontSize: 14, fontWeight: 600, color: "#111D1D", marginBottom: 8, lineHeight: 1.25 }}>{g.org}</div>
-                <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 700, fontSize: 24, color: TEAL }}>{fmt(g.amount)}</div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#1F3A38", marginBottom: 8, lineHeight: 1.25 }}>{g.org}</div>
+                <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 700, fontSize: 24, color: TEAL }}>{fmt(g.amount)}</div>
                 <div style={{ fontSize: 11, color: c, marginTop: 8, fontWeight: 600 }}>{g.category} &rarr;</div>
               </button>
             );
@@ -892,14 +940,14 @@ function PulseLanding({ setView, goGrantee, narrow }) {
         </div>
 
         {/* CTAs */}
-        <Card style={{ padding: narrow ? "20px" : "24px 28px", marginBottom: 40, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 16, background: "#F5FBFB" }}>
+        <Card style={{ padding: narrow ? "22px" : "26px 30px", marginBottom: 40, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 16, background: "#FBF4EC" }}>
           <div>
-            <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 700, fontSize: 20, color: "#111D1D" }}>Take part</div>
-            <div style={{ fontSize: 13, color: "#5A8080", marginTop: 4 }}>Family members can recommend a grant or record a contribution to the fund.</div>
+            <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 22, color: INK }}>Take part</div>
+            <div style={{ fontSize: 14, color: "#7C8C8A", marginTop: 4, fontFamily: FONT_BODY }}>Recommend a grant, or record a contribution to the fund.</div>
           </div>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-            <PrimaryButton href={GRANT_REQUEST_URL}>Request a Grant</PrimaryButton>
-            <PrimaryButton href={CONTRIBUTION_URL}>Make a Contribution</PrimaryButton>
+            <button onClick={() => setView("request-grant")} style={{ background: CORAL, color: "#fff", border: "none", borderRadius: 12, padding: "12px 22px", fontSize: 14.5, fontWeight: 700, fontFamily: FONT_BODY, cursor: "pointer" }}>Recommend a Grant</button>
+            <button onClick={() => setView("contribute")} style={{ background: "#fff", color: TEAL, border: "1.5px solid " + TEAL, borderRadius: 12, padding: "12px 22px", fontSize: 14.5, fontWeight: 700, fontFamily: FONT_BODY, cursor: "pointer" }}>Make a Contribution</button>
           </div>
         </Card>
 
@@ -908,18 +956,18 @@ function PulseLanding({ setView, goGrantee, narrow }) {
         <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "repeat(auto-fill, minmax(240px, 1fr))", gap: 16 }}>
           {explore.map(e => (
             <button key={e.id} onClick={() => setView(e.id)} style={{
-              textAlign: "left", background: "#fff", border: "1px solid #C8E8E8", borderTop: "3px solid " + e.accent,
-              borderRadius: 12, padding: "22px 24px", cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+              textAlign: "left", background: "#fff", border: "1px solid #EFE7DD", borderTop: "3px solid " + e.accent,
+              borderRadius: 12, padding: "22px 24px", cursor: "pointer", fontFamily: "'Nunito Sans', sans-serif",
             }}>
-              <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 700, fontSize: 22, color: "#111D1D", marginBottom: 6 }}>{e.title}</div>
-              <div style={{ fontSize: 13, color: "#5A8080", lineHeight: 1.45 }}>{e.desc}</div>
+              <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 700, fontSize: 22, color: "#1F3A38", marginBottom: 6 }}>{e.title}</div>
+              <div style={{ fontSize: 13, color: "#7C8C8A", lineHeight: 1.45 }}>{e.desc}</div>
               <div style={{ fontSize: 13, color: e.accent, marginTop: 14, fontWeight: 600 }}>Open &rarr;</div>
             </button>
           ))}
         </div>
 
         <div style={{ marginTop: 36, textAlign: "center" }}>
-          <a href="./kendacar_scenarios.html" target="_blank" rel="noopener noreferrer" style={{ color: TEAL, fontSize: 13, fontWeight: 600, textDecoration: "none", fontFamily: "'DM Sans', sans-serif" }}>
+          <a href="./kendacar_scenarios.html" target="_blank" rel="noopener noreferrer" style={{ color: TEAL, fontSize: 13, fontWeight: 600, textDecoration: "none", fontFamily: "'Nunito Sans', sans-serif" }}>
             View 40-year giving scenarios &rarr;
           </a>
         </div>
@@ -956,25 +1004,25 @@ function InvestmentEditor({ investments, onDone }) {
   }
 
   return (
-    <Card style={{ padding: 22, marginBottom: 24, background: "#F5FBFB", border: "1px solid #C8E8E8" }}>
-      <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 700, fontSize: 18, marginBottom: 14 }}>Edit investment figures</div>
+    <Card style={{ padding: 22, marginBottom: 24, background: "#FBF4EC", border: "1px solid #EFE7DD" }}>
+      <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 700, fontSize: 18, marginBottom: 14 }}>Edit investment figures</div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
         {assets.map((a, i) => (
           <div key={a.id ?? i}>
-            <label style={{ fontSize: 11, color: "#5A8080", display: "block", marginBottom: 3 }}>{a.name}</label>
+            <label style={{ fontSize: 11, color: "#7C8C8A", display: "block", marginBottom: 3 }}>{a.name}</label>
             <EdInput type="number" value={a.value} onChange={v => setAssets(assets.map((x, j) => j === i ? { ...x, value: v } : x))} />
           </div>
         ))}
         <div>
-          <label style={{ fontSize: 11, color: "#5A8080", display: "block", marginBottom: 3 }}>Dividends &amp; Interest</label>
+          <label style={{ fontSize: 11, color: "#7C8C8A", display: "block", marginBottom: 3 }}>Dividends &amp; Interest</label>
           <EdInput type="number" value={dividends} onChange={setDividends} />
         </div>
         <div>
-          <label style={{ fontSize: 11, color: "#5A8080", display: "block", marginBottom: 3 }}>As of</label>
+          <label style={{ fontSize: 11, color: "#7C8C8A", display: "block", marginBottom: 3 }}>As of</label>
           <EdInput value={asOf} onChange={setAsOf} />
         </div>
         <div>
-          <label style={{ fontSize: 11, color: "#5A8080", display: "block", marginBottom: 3 }}>Source</label>
+          <label style={{ fontSize: 11, color: "#7C8C8A", display: "block", marginBottom: 3 }}>Source</label>
           <EdInput value={source} onChange={setSource} />
         </div>
       </div>
@@ -1011,19 +1059,19 @@ function InvestmentsView({ narrow }) {
 
       <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "1fr 1fr", gap: 20 }}>
         <Card style={{ padding: 24 }}>
-          <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 600, fontSize: 18, marginBottom: 20 }}>Asset Composition</div>
+          <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 18, marginBottom: 20 }}>Asset Composition</div>
           <ResponsiveContainer width="100%" height={280}>
             <PieChart>
               <Pie data={data} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={60} outerRadius={105} paddingAngle={2}>
                 {data.map((entry, i) => <Cell key={entry.name} fill={colors[i % colors.length]} />)}
               </Pie>
-              <Tooltip formatter={v => fmt(v)} contentStyle={{ fontFamily: "'DM Sans', sans-serif", fontSize: 13 }} />
-              <Legend wrapperStyle={{ fontFamily: "'DM Sans', sans-serif", fontSize: 12 }} />
+              <Tooltip formatter={v => fmt(v)} contentStyle={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 13 }} />
+              <Legend wrapperStyle={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 12 }} />
             </PieChart>
           </ResponsiveContainer>
         </Card>
         <Card style={{ padding: 24 }}>
-          <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 600, fontSize: 18, marginBottom: 20 }}>Breakdown</div>
+          <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 18, marginBottom: 20 }}>Breakdown</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             {data.map((a, i) => {
               const pct = corpus ? Math.round((a.value / corpus) * 100) : 0;
@@ -1031,16 +1079,16 @@ function InvestmentsView({ narrow }) {
                 <div key={a.name}>
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 13 }}>
                     <span style={{ fontWeight: 500 }}>{a.name}</span>
-                    <span style={{ color: "#5A8080" }}>{fmt(a.value)} <span style={{ fontSize: 11 }}>({pct}%)</span></span>
+                    <span style={{ color: "#7C8C8A" }}>{fmt(a.value)} <span style={{ fontSize: 11 }}>({pct}%)</span></span>
                   </div>
-                  <div style={{ height: 8, background: "#EAF5F5", borderRadius: 4 }}>
+                  <div style={{ height: 8, background: "#F3ECE3", borderRadius: 4 }}>
                     <div style={{ height: 8, width: pct + "%", background: colors[i % colors.length], borderRadius: 4 }} />
                   </div>
                 </div>
               );
             })}
           </div>
-          <div style={{ marginTop: 24, paddingTop: 18, borderTop: "1px solid #EAF5F5", fontSize: 12, color: "#7A9898", lineHeight: 1.5 }}>
+          <div style={{ marginTop: 24, paddingTop: 18, borderTop: "1px solid #F3ECE3", fontSize: 12, color: "#7C8C8A", lineHeight: 1.5 }}>
             Figures from the {investments.source}, reflecting balances as of {investments.asOf}. Returns net of estimated investment fees. Sign in and use <em>Edit figures</em> to update these after each annual statement.
           </div>
         </Card>
@@ -1109,13 +1157,13 @@ function GrantsView({ narrow }) {
 
       {/* Filters */}
       <Card style={{ padding: "16px 20px", display: "flex", gap: 20, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 20 }}>
-        <div style={{ fontSize: 12, fontFamily: "'Cormorant Garamond', serif", letterSpacing: "0.1em", textTransform: "uppercase", color: "#5A8080", alignSelf: "center", paddingBottom: 2 }}>Filter</div>
+        <div style={{ fontSize: 12, fontFamily: "'Fredoka', serif", letterSpacing: "0.1em", textTransform: "uppercase", color: "#7C8C8A", alignSelf: "center", paddingBottom: 2 }}>Filter</div>
         <FilterSelect label="Year" value={yearFilter} onChange={setYearFilter} options={ALL_YEARS.map(String)} />
         <FilterSelect label="Organization" value={orgFilter} onChange={setOrgFilter} options={ALL_ORGS} />
         <FilterSelect label="Category" value={catFilter} onChange={setCatFilter} options={ALL_CATS} />
         {hasFilters && (
           <button onClick={() => { setYearFilter("All Years"); setOrgFilter("All Organizations"); setCatFilter("All Categories"); }}
-            style={{ background: "none", border: "1px solid #C0DEDE", borderRadius: 6, padding: "7px 14px", fontSize: 12, color: "#5A8080", cursor: "pointer", fontFamily: "'DM Sans', sans-serif" }}>Clear</button>
+            style={{ background: "none", border: "1px solid #E2D7C9", borderRadius: 6, padding: "7px 14px", fontSize: 12, color: "#7C8C8A", cursor: "pointer", fontFamily: "'Nunito Sans', sans-serif" }}>Clear</button>
         )}
       </Card>
 
@@ -1127,12 +1175,12 @@ function GrantsView({ narrow }) {
       </div>
 
       {/* Sub-tabs */}
-      <div style={{ display: "flex", gap: 2, marginBottom: 20, borderBottom: "2px solid #C8E8E8" }}>
+      <div style={{ display: "flex", gap: 2, marginBottom: 20, borderBottom: "2px solid #EFE7DD" }}>
         {TABS.map(t => (
           <button key={t.id} onClick={() => setTab(t.id)} style={{
             background: "none", border: "none", borderBottom: tab === t.id ? "2px solid " + TEAL : "2px solid transparent",
-            marginBottom: -2, padding: "10px 18px", fontSize: 13, fontFamily: "'DM Sans', sans-serif",
-            fontWeight: tab === t.id ? 600 : 400, color: tab === t.id ? TEAL : "#5A8080", cursor: "pointer",
+            marginBottom: -2, padding: "10px 18px", fontSize: 13, fontFamily: "'Nunito Sans', sans-serif",
+            fontWeight: tab === t.id ? 600 : 400, color: tab === t.id ? TEAL : "#7C8C8A", cursor: "pointer",
           }}>{t.label}</button>
         ))}
       </div>
@@ -1140,29 +1188,29 @@ function GrantsView({ narrow }) {
       {tab === "grants" && (
         <Card style={{ overflow: "hidden" }}>
           {signedIn && (
-            <div style={{ padding: "12px 16px", borderBottom: "1px solid #EAF5F5", background: "#F5FBFB", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 12, color: "#5A8080" }}>You're signed in — click <strong>Edit</strong> on any grant, or add a new one.</span>
+            <div style={{ padding: "12px 16px", borderBottom: "1px solid #F3ECE3", background: "#FBF4EC", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12, color: "#7C8C8A" }}>You're signed in — click <strong>Edit</strong> on any grant, or add a new one.</span>
               <MiniButton kind="edit" onClick={() => setEditId(editId === "new" ? null : "new")}>{editId === "new" ? "Close" : "+ Add grant"}</MiniButton>
             </div>
           )}
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: signedIn ? 640 : 520 }}>
               <thead>
-                <tr style={{ background: "#F0F8F8", borderBottom: "1px solid #C8E8E8" }}>
+                <tr style={{ background: "#FFF8F2", borderBottom: "1px solid #EFE7DD" }}>
                   {["Year", "Organization", "Category", "Amount"].concat(signedIn ? ["Edit"] : []).map(h => (
-                    <th key={h} style={{ padding: "12px 16px", textAlign: "left", fontFamily: "'Cormorant Garamond', serif", fontWeight: 600, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#5A8080", whiteSpace: "nowrap" }}>{h}</th>
+                    <th key={h} style={{ padding: "12px 16px", textAlign: "left", fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#7C8C8A", whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {signedIn && editId === "new" && <GrantEditRow row={null} onDone={() => setEditId(null)} narrow={narrow} />}
-                {filtered.length === 0 && <tr><td colSpan={signedIn ? 5 : 4} style={{ padding: 32, textAlign: "center", color: "#5A8080" }}>No grants match your filters.</td></tr>}
+                {filtered.length === 0 && <tr><td colSpan={signedIn ? 5 : 4} style={{ padding: 32, textAlign: "center", color: "#7C8C8A" }}>No grants match your filters.</td></tr>}
                 {filtered.slice().sort((a, b) => b.year - a.year || b.amount - a.amount).map((g, i) => (
                   editId === g.id && g.id != null ? (
                     <GrantEditRow key={"edit" + g.id} row={g} onDone={() => setEditId(null)} narrow={narrow} />
                   ) : (
-                  <tr key={g.id ?? g.org + g.year + i} style={{ borderBottom: "1px solid #EAF5F5", background: i % 2 === 0 ? "#fff" : "#F8FCFC" }}>
-                    <td style={{ padding: "11px 16px", color: "#5A8080", fontWeight: 500 }}>{g.year}</td>
+                  <tr key={g.id ?? g.org + g.year + i} style={{ borderBottom: "1px solid #F3ECE3", background: i % 2 === 0 ? "#fff" : "#FCF7F1" }}>
+                    <td style={{ padding: "11px 16px", color: "#7C8C8A", fontWeight: 500 }}>{g.year}</td>
                     <td style={{ padding: "11px 16px", fontWeight: 500 }}>{g.org}</td>
                     <td style={{ padding: "11px 16px" }}>
                       <span style={{ background: (CAT_COLORS[g.category] || "#999") + "18", color: CAT_COLORS[g.category] || "#999", borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" }}>{g.category}</span>
@@ -1172,7 +1220,7 @@ function GrantsView({ narrow }) {
                       <td style={{ padding: "11px 16px" }}>
                         {g.id != null
                           ? <MiniButton kind="edit" onClick={() => setEditId(g.id)}>Edit</MiniButton>
-                          : <span style={{ fontSize: 11, color: "#B7C7C7" }}>—</span>}
+                          : <span style={{ fontSize: 11, color: "#C8BBA8" }}>—</span>}
                       </td>
                     )}
                   </tr>
@@ -1187,13 +1235,13 @@ function GrantsView({ narrow }) {
       {tab === "yoy" && (
         <div style={{ display: "grid", gridTemplateColumns: !narrow && orgFilter !== "All Organizations" ? "1fr 1fr" : "1fr", gap: 20 }}>
           <Card style={{ padding: 24 }}>
-            <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 600, fontSize: 18, marginBottom: 4 }}>Total Giving by Year</div>
-            <div style={{ fontSize: 12, color: "#5A8080", marginBottom: 20 }}>2001 through {currentCycleYear(grants)}</div>
+            <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 18, marginBottom: 4 }}>Total Giving by Year</div>
+            <div style={{ fontSize: 12, color: "#7C8C8A", marginBottom: 20 }}>2001 through {currentCycleYear(grants)}</div>
             <ResponsiveContainer width="100%" height={280}>
               <BarChart data={yoyData} margin={{ bottom: 10 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#EAF5F5" />
-                <XAxis dataKey="year" tick={{ fontFamily: "'DM Sans', sans-serif", fontSize: 11 }} interval={2} />
-                <YAxis tickFormatter={fmtK} tick={{ fontFamily: "'DM Sans', sans-serif", fontSize: 11 }} />
+                <CartesianGrid strokeDasharray="3 3" stroke="#F3ECE3" />
+                <XAxis dataKey="year" tick={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 11 }} interval={2} />
+                <YAxis tickFormatter={fmtK} tick={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 11 }} />
                 <Tooltip content={<CustomTooltip />} />
                 <Bar dataKey="amount" fill={TEAL} radius={[3, 3, 0, 0]} />
               </BarChart>
@@ -1201,13 +1249,13 @@ function GrantsView({ narrow }) {
           </Card>
           {orgFilter !== "All Organizations" && orgHistory.length > 0 && (
             <Card style={{ padding: 24 }}>
-              <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 600, fontSize: 18, marginBottom: 4 }}>{orgFilter}</div>
-              <div style={{ fontSize: 12, color: "#5A8080", marginBottom: 20 }}>Giving history for this organization</div>
+              <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 18, marginBottom: 4 }}>{orgFilter}</div>
+              <div style={{ fontSize: 12, color: "#7C8C8A", marginBottom: 20 }}>Giving history for this organization</div>
               <ResponsiveContainer width="100%" height={280}>
                 <LineChart data={orgHistory}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#EAF5F5" />
-                  <XAxis dataKey="year" tick={{ fontFamily: "'DM Sans', sans-serif", fontSize: 11 }} />
-                  <YAxis tickFormatter={fmtK} tick={{ fontFamily: "'DM Sans', sans-serif", fontSize: 11 }} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#F3ECE3" />
+                  <XAxis dataKey="year" tick={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 11 }} />
+                  <YAxis tickFormatter={fmtK} tick={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 11 }} />
                   <Tooltip content={<CustomTooltip />} />
                   <Line type="monotone" dataKey="amount" stroke="#C8A020" strokeWidth={2.5} dot={{ fill: "#C8A020", r: 5 }} />
                 </LineChart>
@@ -1220,19 +1268,19 @@ function GrantsView({ narrow }) {
       {tab === "categories" && (
         <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "1fr 1fr", gap: 20 }}>
           <Card style={{ padding: 24 }}>
-            <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 600, fontSize: 18, marginBottom: 20 }}>Giving by Focus Area</div>
+            <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 18, marginBottom: 20 }}>Giving by Focus Area</div>
             <ResponsiveContainer width="100%" height={280}>
               <PieChart>
                 <Pie data={catData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={55} outerRadius={100} paddingAngle={2}>
                   {catData.map(entry => <Cell key={entry.name} fill={CAT_COLORS[entry.name] || "#999"} />)}
                 </Pie>
-                <Tooltip formatter={v => fmt(v)} contentStyle={{ fontFamily: "'DM Sans', sans-serif", fontSize: 13 }} />
-                <Legend wrapperStyle={{ fontFamily: "'DM Sans', sans-serif", fontSize: 12 }} />
+                <Tooltip formatter={v => fmt(v)} contentStyle={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 13 }} />
+                <Legend wrapperStyle={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 12 }} />
               </PieChart>
             </ResponsiveContainer>
           </Card>
           <Card style={{ padding: 24 }}>
-            <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 600, fontSize: 18, marginBottom: 20 }}>Breakdown</div>
+            <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 18, marginBottom: 20 }}>Breakdown</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 13 }}>
               {catData.map(c => {
                 const pct = totalGiven ? Math.round((c.value / totalGiven) * 100) : 0;
@@ -1240,9 +1288,9 @@ function GrantsView({ narrow }) {
                   <div key={c.name}>
                     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 13 }}>
                       <span style={{ fontWeight: 500 }}>{c.name}</span>
-                      <span style={{ color: "#5A8080" }}>{fmt(c.value)} <span style={{ fontSize: 11 }}>({pct}%)</span></span>
+                      <span style={{ color: "#7C8C8A" }}>{fmt(c.value)} <span style={{ fontSize: 11 }}>({pct}%)</span></span>
                     </div>
-                    <div style={{ height: 6, background: "#EAF5F5", borderRadius: 3 }}>
+                    <div style={{ height: 6, background: "#F3ECE3", borderRadius: 3 }}>
                       <div style={{ height: 6, width: pct + "%", background: CAT_COLORS[c.name] || "#999", borderRadius: 3 }} />
                     </div>
                   </div>
@@ -1285,8 +1333,8 @@ function ContributionsView({ narrow }) {
 
       <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "1fr 1fr", gap: 20 }}>
         <Card style={{ padding: 24 }}>
-          <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 600, fontSize: 18, marginBottom: 4 }}>Contributions by Year</div>
-          <div style={{ fontSize: 12, color: "#5A8080", marginBottom: 20 }}>Total contributed: <strong style={{ color: TEAL }}>{fmt(totalReceived)}</strong></div>
+          <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 18, marginBottom: 4 }}>Contributions by Year</div>
+          <div style={{ fontSize: 12, color: "#7C8C8A", marginBottom: 20 }}>Total contributed: <strong style={{ color: TEAL }}>{fmt(totalReceived)}</strong></div>
           <ResponsiveContainer width="100%" height={240}>
             <AreaChart data={donByYear}>
               <defs>
@@ -1295,25 +1343,25 @@ function ContributionsView({ narrow }) {
                   <stop offset="95%" stopColor={TEAL} stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#EAF5F5" />
-              <XAxis dataKey="year" tick={{ fontFamily: "'DM Sans', sans-serif", fontSize: 11 }} interval={3} />
-              <YAxis tickFormatter={fmtK} tick={{ fontFamily: "'DM Sans', sans-serif", fontSize: 11 }} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#F3ECE3" />
+              <XAxis dataKey="year" tick={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 11 }} interval={3} />
+              <YAxis tickFormatter={fmtK} tick={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 11 }} />
               <Tooltip content={<CustomTooltip />} />
               <Area type="monotone" dataKey="amount" stroke={TEAL} strokeWidth={2} fill="url(#tealGrad)" />
             </AreaChart>
           </ResponsiveContainer>
         </Card>
         <Card style={{ overflow: "hidden" }}>
-          <div style={{ padding: "16px 20px", borderBottom: "1px solid #EAF5F5", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-            <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 600, fontSize: 18 }}>Contribution History</div>
+          <div style={{ padding: "16px 20px", borderBottom: "1px solid #F3ECE3", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+            <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 18 }}>Contribution History</div>
             {signedIn && <MiniButton kind="edit" onClick={() => setEditId(editId === "new" ? null : "new")}>{editId === "new" ? "Close" : "+ Add"}</MiniButton>}
           </div>
           <div style={{ maxHeight: 340, overflowY: "auto", overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: signedIn ? 480 : 360 }}>
               <thead>
-                <tr style={{ background: "#F0F8F8" }}>
+                <tr style={{ background: "#FFF8F2" }}>
                   {["Year", "Donor", "Amount"].concat(signedIn ? ["Edit"] : []).map(h => (
-                    <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontFamily: "'Cormorant Garamond', serif", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#5A8080" }}>{h}</th>
+                    <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontFamily: "'Fredoka', serif", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#7C8C8A" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
@@ -1323,11 +1371,11 @@ function ContributionsView({ narrow }) {
                   editId === d.id && d.id != null ? (
                     <DonationEditRow key={"edit" + d.id} row={d} onDone={() => setEditId(null)} />
                   ) : (
-                  <tr key={d.id ?? d.donor + d.year + i} style={{ borderBottom: "1px solid #EAF5F5", background: i % 2 === 0 ? "#fff" : "#F8FCFC" }}>
-                    <td style={{ padding: "10px 16px", color: "#5A8080" }}>{d.year}</td>
+                  <tr key={d.id ?? d.donor + d.year + i} style={{ borderBottom: "1px solid #F3ECE3", background: i % 2 === 0 ? "#fff" : "#FCF7F1" }}>
+                    <td style={{ padding: "10px 16px", color: "#7C8C8A" }}>{d.year}</td>
                     <td style={{ padding: "10px 16px", fontWeight: 500 }}>{d.donor}</td>
                     <td style={{ padding: "10px 16px", fontWeight: 700, color: TEAL }}>{fmt(d.amount)}</td>
-                    {signedIn && <td style={{ padding: "10px 16px" }}>{d.id != null ? <MiniButton kind="edit" onClick={() => setEditId(d.id)}>Edit</MiniButton> : <span style={{ fontSize: 11, color: "#B7C7C7" }}>—</span>}</td>}
+                    {signedIn && <td style={{ padding: "10px 16px" }}>{d.id != null ? <MiniButton kind="edit" onClick={() => setEditId(d.id)}>Edit</MiniButton> : <span style={{ fontSize: 11, color: "#C8BBA8" }}>—</span>}</td>}
                   </tr>
                   )
                 ))}
@@ -1371,31 +1419,31 @@ function GranteesDirectory({ goGrantee, narrow }) {
     <div style={{ maxWidth: 1140, margin: "0 auto", padding: narrow ? "28px 16px" : "36px 40px" }}>
       <SectionTitle title="Grantees" sub={index.length + " organizations, ranked by total support received"} />
       <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search organizations..." style={{
-        width: "100%", maxWidth: 380, border: "1px solid #C0DEDE", borderRadius: 8, padding: "10px 14px",
-        fontSize: 14, fontFamily: "'DM Sans', sans-serif", color: "#111D1D", background: "#F5FBFB", marginBottom: 22,
+        width: "100%", maxWidth: 380, border: "1px solid #E2D7C9", borderRadius: 8, padding: "10px 14px",
+        fontSize: 14, fontFamily: "'Nunito Sans', sans-serif", color: "#1F3A38", background: "#FBF4EC", marginBottom: 22,
       }} />
       <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "repeat(auto-fill, minmax(320px, 1fr))", gap: 12 }}>
         {list.map((o, i) => {
           const c = CAT_COLORS[o.category] || "#999";
           return (
             <button key={o.org} onClick={() => goGrantee(o.org)} style={{
-              textAlign: "left", background: "#fff", border: "1px solid #C8E8E8", borderLeft: "4px solid " + c,
-              borderRadius: 10, padding: "16px 18px", cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+              textAlign: "left", background: "#fff", border: "1px solid #EFE7DD", borderLeft: "4px solid " + c,
+              borderRadius: 10, padding: "16px 18px", cursor: "pointer", fontFamily: "'Nunito Sans', sans-serif",
               display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12,
             }}>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 11, color: "#A8B8B8", fontWeight: 600 }}>#{i + 1}</div>
-                <div style={{ fontSize: 14, fontWeight: 600, color: "#111D1D", lineHeight: 1.25 }}>{o.org}</div>
-                <div style={{ fontSize: 12, color: "#5A8080", marginTop: 4 }}>{o.count} grant{o.count > 1 ? "s" : ""} &middot; {o.firstYear}&ndash;{o.lastYear}</div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#1F3A38", lineHeight: 1.25 }}>{o.org}</div>
+                <div style={{ fontSize: 12, color: "#7C8C8A", marginTop: 4 }}>{o.count} grant{o.count > 1 ? "s" : ""} &middot; {o.firstYear}&ndash;{o.lastYear}</div>
               </div>
               <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 700, fontSize: 20, color: TEAL }}>{fmtK(o.total)}</div>
+                <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 700, fontSize: 20, color: TEAL }}>{fmtK(o.total)}</div>
                 <div style={{ fontSize: 10, color: c, fontWeight: 600, marginTop: 2 }}>{o.category}</div>
               </div>
             </button>
           );
         })}
-        {list.length === 0 && <div style={{ color: "#5A8080", padding: 20 }}>No organizations match &ldquo;{q}&rdquo;.</div>}
+        {list.length === 0 && <div style={{ color: "#7C8C8A", padding: 20 }}>No organizations match &ldquo;{q}&rdquo;.</div>}
       </div>
     </div>
   );
@@ -1410,7 +1458,7 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
     return (
       <div style={{ maxWidth: 1140, margin: "0 auto", padding: "36px 40px" }}>
         <button onClick={() => setView("grantees")} style={{ background: "none", border: "none", color: TEAL, cursor: "pointer", fontSize: 13, fontWeight: 600, marginBottom: 16 }}>&larr; All grantees</button>
-        <div style={{ color: "#5A8080" }}>Organization not found.</div>
+        <div style={{ color: "#7C8C8A" }}>Organization not found.</div>
       </div>
     );
   }
@@ -1420,50 +1468,50 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
 
   return (
     <div style={{ maxWidth: 1140, margin: "0 auto", padding: narrow ? "24px 16px" : "32px 40px" }}>
-      <button onClick={() => setView("grantees")} style={{ background: "none", border: "none", color: TEAL, cursor: "pointer", fontSize: 13, fontWeight: 600, marginBottom: 18, fontFamily: "'DM Sans', sans-serif" }}>&larr; All grantees</button>
+      <button onClick={() => setView("grantees")} style={{ background: "none", border: "none", color: TEAL, cursor: "pointer", fontSize: 13, fontWeight: 600, marginBottom: 18, fontFamily: "'Nunito Sans', sans-serif" }}>&larr; All grantees</button>
 
       {/* Header */}
-      <div style={{ background: "#fff", border: "1px solid #C8E8E8", borderLeft: "5px solid " + c, borderRadius: 12, padding: narrow ? "22px" : "28px 32px", marginBottom: 24 }}>
+      <div style={{ background: "#fff", border: "1px solid #EFE7DD", borderLeft: "5px solid " + c, borderRadius: 12, padding: narrow ? "22px" : "28px 32px", marginBottom: 24 }}>
         <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 16, alignItems: "flex-start" }}>
           <div>
             <span style={{ background: c + "18", color: c, borderRadius: 20, padding: "3px 12px", fontSize: 11, fontWeight: 600 }}>{rec.category}</span>
-            <h2 style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 700, fontSize: narrow ? 26 : 32, margin: "12px 0 4px", color: "#111D1D" }}>{rec.org}</h2>
-            <div style={{ fontSize: 13, color: "#5A8080" }}>Grantee #{rank} by total support &middot; supported across {rec.yearCount} year{rec.yearCount > 1 ? "s" : ""}</div>
+            <h2 style={{ fontFamily: "'Fredoka', serif", fontWeight: 700, fontSize: narrow ? 26 : 32, margin: "12px 0 4px", color: "#1F3A38" }}>{rec.org}</h2>
+            <div style={{ fontSize: 13, color: "#7C8C8A" }}>Grantee #{rank} by total support &middot; supported across {rec.yearCount} year{rec.yearCount > 1 ? "s" : ""}</div>
             {note && note.website && (
               <a href={note.website} target="_blank" rel="noopener noreferrer" style={{ display: "inline-block", marginTop: 10, color: TEAL, fontSize: 13, fontWeight: 600, textDecoration: "none" }}>Visit website &rarr;</a>
             )}
           </div>
           <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 11, fontFamily: "'Cormorant Garamond', serif", letterSpacing: "0.12em", textTransform: "uppercase", color: "#5A8080" }}>Total Received</div>
-            <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 700, fontSize: 40, color: TEAL, lineHeight: 1 }}>{fmt(rec.total)}</div>
-            <div style={{ fontSize: 12, color: "#7A9898", marginTop: 4 }}>{rec.count} grant{rec.count > 1 ? "s" : ""} &middot; {rec.firstYear}&ndash;{rec.lastYear}</div>
+            <div style={{ fontSize: 11, fontFamily: "'Fredoka', serif", letterSpacing: "0.12em", textTransform: "uppercase", color: "#7C8C8A" }}>Total Received</div>
+            <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 700, fontSize: 40, color: TEAL, lineHeight: 1 }}>{fmt(rec.total)}</div>
+            <div style={{ fontSize: 12, color: "#7C8C8A", marginTop: 4 }}>{rec.count} grant{rec.count > 1 ? "s" : ""} &middot; {rec.firstYear}&ndash;{rec.lastYear}</div>
           </div>
         </div>
         {note && (note.contact || note.note) && (
-          <div style={{ marginTop: 20, paddingTop: 18, borderTop: "1px solid #EAF5F5" }}>
-            {note.contact && <div style={{ fontSize: 13, color: "#111D1D", fontWeight: 600, marginBottom: 6 }}>{note.contact}</div>}
-            {note.note && <div style={{ fontSize: 13, color: "#5A8080", lineHeight: 1.55, maxWidth: 720 }}>{note.note}</div>}
+          <div style={{ marginTop: 20, paddingTop: 18, borderTop: "1px solid #F3ECE3" }}>
+            {note.contact && <div style={{ fontSize: 13, color: "#1F3A38", fontWeight: 600, marginBottom: 6 }}>{note.contact}</div>}
+            {note.note && <div style={{ fontSize: 13, color: "#7C8C8A", lineHeight: 1.55, maxWidth: 720 }}>{note.note}</div>}
           </div>
         )}
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "1fr 1fr", gap: 20 }}>
         <Card style={{ padding: 24 }}>
-          <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 600, fontSize: 18, marginBottom: 20 }}>Support Over Time</div>
+          <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 18, marginBottom: 20 }}>Support Over Time</div>
           <ResponsiveContainer width="100%" height={240}>
             {history.length > 1 ? (
               <LineChart data={history}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#EAF5F5" />
-                <XAxis dataKey="year" tick={{ fontFamily: "'DM Sans', sans-serif", fontSize: 11 }} />
-                <YAxis tickFormatter={fmtK} tick={{ fontFamily: "'DM Sans', sans-serif", fontSize: 11 }} />
+                <CartesianGrid strokeDasharray="3 3" stroke="#F3ECE3" />
+                <XAxis dataKey="year" tick={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 11 }} />
+                <YAxis tickFormatter={fmtK} tick={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 11 }} />
                 <Tooltip content={<CustomTooltip />} />
                 <Line type="monotone" dataKey="amount" stroke={c} strokeWidth={2.5} dot={{ fill: c, r: 4 }} />
               </LineChart>
             ) : (
               <BarChart data={history}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#EAF5F5" />
-                <XAxis dataKey="year" tick={{ fontFamily: "'DM Sans', sans-serif", fontSize: 11 }} />
-                <YAxis tickFormatter={fmtK} tick={{ fontFamily: "'DM Sans', sans-serif", fontSize: 11 }} />
+                <CartesianGrid strokeDasharray="3 3" stroke="#F3ECE3" />
+                <XAxis dataKey="year" tick={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 11 }} />
+                <YAxis tickFormatter={fmtK} tick={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 11 }} />
                 <Tooltip content={<CustomTooltip />} />
                 <Bar dataKey="amount" fill={c} radius={[3, 3, 0, 0]} />
               </BarChart>
@@ -1471,22 +1519,22 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
           </ResponsiveContainer>
         </Card>
         <Card style={{ overflow: "hidden" }}>
-          <div style={{ padding: "16px 20px", borderBottom: "1px solid #EAF5F5" }}>
-            <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 600, fontSize: 18 }}>Grant History</div>
+          <div style={{ padding: "16px 20px", borderBottom: "1px solid #F3ECE3" }}>
+            <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 18 }}>Grant History</div>
           </div>
           <div style={{ maxHeight: 300, overflowY: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead>
-                <tr style={{ background: "#F0F8F8" }}>
+                <tr style={{ background: "#FFF8F2" }}>
                   {["Year", "Amount"].map(h => (
-                    <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontFamily: "'Cormorant Garamond', serif", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#5A8080" }}>{h}</th>
+                    <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontFamily: "'Fredoka', serif", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#7C8C8A" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {rec.grants.slice().sort((a, b) => b.year - a.year).map((g, i) => (
-                  <tr key={g.year + "-" + i} style={{ borderBottom: "1px solid #EAF5F5", background: i % 2 === 0 ? "#fff" : "#F8FCFC" }}>
-                    <td style={{ padding: "10px 16px", color: "#5A8080" }}>{g.year}</td>
+                  <tr key={g.year + "-" + i} style={{ borderBottom: "1px solid #F3ECE3", background: i % 2 === 0 ? "#fff" : "#FCF7F1" }}>
+                    <td style={{ padding: "10px 16px", color: "#7C8C8A" }}>{g.year}</td>
                     <td style={{ padding: "10px 16px", fontWeight: 700, color: TEAL }}>{fmt(g.amount)}</td>
                   </tr>
                 ))}
@@ -1496,6 +1544,155 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
         </Card>
       </div>
     </div>
+  );
+}
+
+// =============================================================================
+//  FORM PAGES  (Request a Grant · Make a Contribution)
+// =============================================================================
+
+function FormField({ label, children, hint }) {
+  return (
+    <label style={{ display: "block", marginBottom: 16 }}>
+      <div style={{ fontFamily: FONT_BODY, fontWeight: 700, fontSize: 13, color: INK, marginBottom: 5 }}>{label}</div>
+      {children}
+      {hint && <div style={{ fontSize: 12, color: "#9B8E80", marginTop: 4 }}>{hint}</div>}
+    </label>
+  );
+}
+
+const formInput = {
+  width: "100%", border: "1.5px solid " + LINE, borderRadius: 12, padding: "11px 14px",
+  fontSize: 15, fontFamily: FONT_BODY, color: INK, background: "#fff", outline: "none",
+};
+
+function FormShell({ title, accent, lead, narrow, setView, children, done, doneMsg }) {
+  return (
+    <div style={{ maxWidth: 620, margin: "0 auto", padding: narrow ? "28px 16px 60px" : "44px 40px 80px" }}>
+      <button onClick={() => setView("pulse")} style={{ background: "none", border: "none", color: TEAL, cursor: "pointer", fontSize: 13, fontWeight: 700, marginBottom: 18, fontFamily: FONT_BODY }}>&larr; Back to dashboard</button>
+      <div style={{ background: "#fff", border: "1.5px solid " + LINE, borderRadius: 24, padding: narrow ? "28px 22px" : "40px 44px" }}>
+        {done ? (
+          <div style={{ textAlign: "center", padding: "20px 0" }}>
+            <div style={{ display: "flex", justifyContent: "center", marginBottom: 14 }}><HopMark size={58} /></div>
+            <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 26, color: INK }}>Thank you!</div>
+            <div style={{ fontFamily: FONT_BODY, fontSize: 15.5, color: "#6F7E7C", marginTop: 10, lineHeight: 1.6, maxWidth: 420, marginInline: "auto" }}>{doneMsg}</div>
+            <button onClick={() => setView("pulse")} style={{ marginTop: 22, background: TEAL, color: "#fff", border: "none", borderRadius: 12, padding: "11px 22px", fontSize: 14, fontWeight: 700, fontFamily: FONT_BODY, cursor: "pointer" }}>Back to the dashboard</button>
+          </div>
+        ) : (
+          <>
+            <div style={{ fontFamily: FONT_ACCENT, fontWeight: 700, fontSize: 30, color: accent, lineHeight: 1, marginBottom: 2 }}>{lead}</div>
+            <h1 style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: narrow ? 28 : 34, color: INK, lineHeight: 1.1, margin: "0 0 20px" }}>{title}</h1>
+            {children}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RequestGrantForm({ narrow, setView }) {
+  const { grants } = useData();
+  const orgNames = useMemo(() => Array.from(new Set(grants.map(g => normalizeOrg(g.org)))).sort(), [grants]);
+  const [org, setOrg] = useState("");
+  const [requestedBy, setRequestedBy] = useState("");
+  const [amount, setAmount] = useState("");
+  const [category, setCategory] = useState("");
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [done, setDone] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!org.trim() || !requestedBy.trim()) { setErr("Please add the organization and your name."); return; }
+    setBusy(true); setErr("");
+    try {
+      await publicInsert("grant_requests", {
+        org: org.trim(), requested_by: requestedBy.trim(),
+        amount: amount === "" ? null : Number(amount),
+        category: category || null, notes: notes.trim() || null,
+      });
+      setDone(true);
+    } catch (e2) { setErr(e2.message); setBusy(false); }
+  }
+
+  return (
+    <FormShell narrow={narrow} setView={setView} accent={CORAL} lead="put one forward" title="Recommend a grant"
+      done={done} doneMsg="Your recommendation is in. A trustee will review it for the next giving cycle.">
+      <p style={{ fontFamily: FONT_BODY, fontSize: 15, color: "#6F7E7C", lineHeight: 1.6, marginBottom: 22 }}>
+        Know an organization Kendacar should support? Put it forward here and a trustee will take a look.
+      </p>
+      <form onSubmit={submit}>
+        <FormField label="Organization" hint="Start typing — past grantees will suggest themselves.">
+          <input list="org-options" value={org} onChange={e => setOrg(e.target.value)} placeholder="Organization name" style={formInput} />
+          <datalist id="org-options">{orgNames.map(o => <option key={o} value={o} />)}</datalist>
+        </FormField>
+        <FormField label="Your name">
+          <input value={requestedBy} onChange={e => setRequestedBy(e.target.value)} placeholder="Who's recommending this" style={formInput} />
+        </FormField>
+        <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "1fr 1fr", gap: 14 }}>
+          <FormField label="Suggested amount" hint="Optional">
+            <input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="$" style={formInput} />
+          </FormField>
+          <FormField label="Focus area" hint="Optional">
+            <select value={category} onChange={e => setCategory(e.target.value)} style={{ ...formInput, cursor: "pointer" }}>
+              <option value="">Choose one…</option>
+              {CATEGORY_LIST.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </FormField>
+        </div>
+        <FormField label="Why this organization?" hint="Optional — a sentence or two helps.">
+          <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={4} placeholder="What they do and why it matters" style={{ ...formInput, resize: "vertical" }} />
+        </FormField>
+        {err && <div style={{ color: "#B5451B", fontSize: 13, marginBottom: 12 }}>{err}</div>}
+        <button type="submit" disabled={busy} style={{ background: CORAL, color: "#fff", border: "none", borderRadius: 12, padding: "13px 26px", fontSize: 15, fontWeight: 700, fontFamily: FONT_BODY, cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }}>
+          {busy ? "Sending…" : "Submit recommendation"}
+        </button>
+      </form>
+    </FormShell>
+  );
+}
+
+function ContributionForm({ narrow, setView }) {
+  const [donor, setDonor] = useState("");
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [done, setDone] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!donor.trim() || amount === "" || isNaN(Number(amount))) { setErr("Please add your name and a numeric amount."); return; }
+    setBusy(true); setErr("");
+    try {
+      await publicInsert("contributions", { donor: donor.trim(), amount: Number(amount), note: note.trim() || null });
+      setDone(true);
+    } catch (e2) { setErr(e2.message); setBusy(false); }
+  }
+
+  return (
+    <FormShell narrow={narrow} setView={setView} accent={SOFT_TEAL} lead="give in" title="Record a contribution"
+      done={done} doneMsg="Thank you for giving into the fund. Your contribution has been recorded.">
+      <p style={{ fontFamily: FONT_BODY, fontSize: 15, color: "#6F7E7C", lineHeight: 1.6, marginBottom: 22 }}>
+        Adding to the Kendacar fund? Record it here so it shows up in the foundation's contribution history.
+      </p>
+      <form onSubmit={submit}>
+        <FormField label="Your name">
+          <input value={donor} onChange={e => setDonor(e.target.value)} placeholder="Donor name" style={formInput} />
+        </FormField>
+        <FormField label="Amount">
+          <input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="$" style={formInput} />
+        </FormField>
+        <FormField label="Note" hint="Optional">
+          <textarea value={note} onChange={e => setNote(e.target.value)} rows={3} placeholder="Anything to add" style={{ ...formInput, resize: "vertical" }} />
+        </FormField>
+        {err && <div style={{ color: "#B5451B", fontSize: 13, marginBottom: 12 }}>{err}</div>}
+        <button type="submit" disabled={busy} style={{ background: TEAL, color: "#fff", border: "none", borderRadius: 12, padding: "13px 26px", fontSize: 15, fontWeight: 700, fontFamily: FONT_BODY, cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }}>
+          {busy ? "Recording…" : "Record contribution"}
+        </button>
+      </form>
+    </FormShell>
   );
 }
 
@@ -1532,10 +1729,18 @@ export default function App() {
         refreshSession(existing).then(r => { if (r) { setSession(r); saveSession(r); } else { saveSession(null); } });
       } else setSession(existing);
     }
+    // Deep-link to a form page (shareable links like .../Kendacar/#request-grant)
+    const h = window.location.hash.replace("#", "");
+    if (h === "request-grant" || h === "contribute") setView(h);
     loadData();
   }, []);
 
-  function nav(v) { setView(v); setSelectedOrg(null); window.scrollTo({ top: 0 }); }
+  function nav(v) {
+    setView(v); setSelectedOrg(null);
+    const hashView = v === "request-grant" || v === "contribute";
+    history.replaceState(null, "", window.location.pathname + window.location.search + (hashView ? "#" + v : ""));
+    window.scrollTo({ top: 0 });
+  }
   function goGrantee(org) { setSelectedOrg(org); setView("grantee-detail"); window.scrollTo({ top: 0 }); }
 
   const auth = {
@@ -1549,11 +1754,11 @@ export default function App() {
   return (
     <AuthContext.Provider value={auth}>
       <DataContext.Provider value={{ ...data, refresh: loadData, live: source === "live" }}>
-        <div style={{ minHeight: "100vh", background: "#F0F8F8", fontFamily: "'DM Sans', sans-serif", color: "#111D1D" }}>
+        <div style={{ minHeight: "100vh", background: "#FFF8F2", fontFamily: "'Nunito Sans', sans-serif", color: "#1F3A38" }}>
           <NavBar view={view} setView={nav} narrow={narrow} />
 
           {auth.signedIn && (
-            <div style={{ background: "#0E7A5F", color: "#fff", textAlign: "center", fontSize: 12, padding: "7px 16px", fontFamily: "'DM Sans', sans-serif" }}>
+            <div style={{ background: "#0E7A5F", color: "#fff", textAlign: "center", fontSize: 12, padding: "7px 16px", fontFamily: "'Nunito Sans', sans-serif" }}>
               Edit mode — signed in as {auth.email}. Open <strong>Grants Made</strong>, <strong>Contributions</strong>, or <strong>Investments</strong> to make changes. ·{" "}
               <button onClick={auth.signOut} style={{ background: "none", border: "none", color: "#CFEFE5", cursor: "pointer", fontSize: 12, fontWeight: 600, textDecoration: "underline" }}>Sign out</button>
             </div>
@@ -1565,8 +1770,10 @@ export default function App() {
           {view === "contributions"  && <ContributionsView narrow={narrow} />}
           {view === "grantees"       && <GranteesDirectory goGrantee={goGrantee} narrow={narrow} />}
           {view === "grantee-detail" && <GranteeDetail org={selectedOrg} setView={nav} goGrantee={goGrantee} narrow={narrow} />}
+          {view === "request-grant"  && <RequestGrantForm narrow={narrow} setView={nav} />}
+          {view === "contribute"     && <ContributionForm narrow={narrow} setView={nav} />}
 
-          <div style={{ padding: "32px 20px", textAlign: "center", fontSize: 11, color: "#7A9898", fontFamily: "'Cormorant Garamond', serif", letterSpacing: "0.08em" }}>
+          <div style={{ padding: "32px 20px", textAlign: "center", fontSize: 11, color: "#7C8C8A", fontFamily: "'Fredoka', serif", letterSpacing: "0.08em" }}>
             KENDACAR FOUNDATION &middot; CONFIDENTIAL &middot; FOR FAMILY USE ONLY
             {source === "live" && <span style={{ color: "#B7CFCF" }}> &middot; live data</span>}
             <SignInControl />
