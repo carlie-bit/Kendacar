@@ -55,12 +55,14 @@ function sessionFromHash() {
   };
 }
 
-// Send a one-time sign-in link to an email.
+// Send a one-time sign-in link to an email. GoTrue reads the return URL from
+// the `redirect_to` query parameter, so it must go on the URL (not the body).
 async function sendMagicLink(email) {
-  const res = await fetch(AUTH + "otp", {
+  const redirect = window.location.origin + window.location.pathname;
+  const res = await fetch(AUTH + "otp?redirect_to=" + encodeURIComponent(redirect), {
     method: "POST",
     headers: { apikey: SUPABASE_KEY, "Content-Type": "application/json" },
-    body: JSON.stringify({ email, create_user: true, options: { email_redirect_to: window.location.origin + window.location.pathname } }),
+    body: JSON.stringify({ email, create_user: true }),
   });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).msg || "Could not send link (" + res.status + ")");
   return true;
