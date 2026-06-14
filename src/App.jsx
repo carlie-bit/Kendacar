@@ -1096,18 +1096,20 @@ function InvestmentsView({ narrow }) {
         <StatCard label="Asset Classes" value={data.length} sub="equities, fixed income, cash" accent={SUN} />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "1fr 1fr", gap: 20 }}>
+      <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "minmax(0,1fr) minmax(0,1fr)", gap: 20 }}>
         <Card style={{ padding: 24 }}>
-          <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, marginBottom: 20 }}>Asset Allocation</div>
-          <ResponsiveContainer width="100%" height={280}>
-            <PieChart>
-              <Pie data={data} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={62} outerRadius={106} paddingAngle={2}>
-                {data.map((entry, i) => <Cell key={entry.name} fill={colorOf(entry.name, i)} />)}
-              </Pie>
-              <Tooltip formatter={v => fmt(v)} contentStyle={{ fontFamily: FONT_BODY, fontSize: 13 }} />
-              <Legend wrapperStyle={{ fontFamily: FONT_BODY, fontSize: 12 }} />
-            </PieChart>
-          </ResponsiveContainer>
+          <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, marginBottom: 8 }}>Asset Allocation</div>
+          <div style={{ width: "100%", height: 280 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie data={data} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={62} outerRadius={106} paddingAngle={2} isAnimationActive={false}>
+                  {data.map((entry, i) => <Cell key={entry.name} fill={colorOf(entry.name, i)} />)}
+                </Pie>
+                <Tooltip formatter={v => fmt(v)} contentStyle={{ fontFamily: FONT_BODY, fontSize: 13 }} />
+                <Legend wrapperStyle={{ fontFamily: FONT_BODY, fontSize: 12 }} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
         </Card>
         <Card style={{ padding: 24 }}>
           <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, marginBottom: 20 }}>Breakdown</div>
