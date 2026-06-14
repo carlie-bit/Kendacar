@@ -926,7 +926,7 @@ function PulseLanding({ setView, goGrantee, narrow }) {
   const cycleTotal = cycleGrants.reduce((s, g) => s + g.amount, 0);
 
   const explore = [
-    { id: "investments",   title: "Investments",   desc: corpus ? fmtK(corpus) + " corpus, by asset class" : "Corpus & holdings", accent: "#3A6B9C" },
+    { id: "investments",   title: "Investments",   desc: corpus ? fmtK(corpus) + " endowment corpus" : "The endowment corpus", accent: "#3A6B9C" },
     { id: "grants",        title: "Grants Made",    desc: fmt(totalGranted) + " across " + grants.length + " grants", accent: TEAL },
     { id: "contributions", title: "Contributions",  desc: fmt(totalReceived) + " given into the fund", accent: "#C8A020" },
     { id: "grantees",      title: "Grantees",       desc: "Every organization, ranked by support", accent: "#7B5EA7" },
@@ -1022,115 +1022,69 @@ function PulseLanding({ setView, goGrantee, narrow }) {
 function InvestmentEditor({ investments, onDone }) {
   const { session, setSession } = useAuth();
   const { refresh } = useData();
-  const [assets, setAssets] = useState(investments.composition.map(a => ({ ...a })));
+  const asset = investments.composition[0] || null;
+  const [total, setTotal] = useState(asset ? asset.value : corpusTotal(investments));
   const [asOf, setAsOf] = useState(investments.asOf);
-  const [source, setSource] = useState(investments.source);
-  const [dividends, setDividends] = useState(investments.dividendsInterest);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
   async function save() {
     setBusy(true); setErr("");
     try {
-      for (const a of assets) {
-        if (a.id != null) await authedWrite(session, setSession, "PATCH", "investment_assets?id=eq." + a.id, { name: a.name, value: Number(a.value) });
-      }
+      if (asset && asset.id != null) await authedWrite(session, setSession, "PATCH", "investment_assets?id=eq." + asset.id, { name: "Total Portfolio", value: Number(total) });
+      else await authedWrite(session, setSession, "POST", "investment_assets", { name: "Total Portfolio", value: Number(total), sort_order: 0 });
       await authedWrite(session, setSession, "PATCH", "settings?key=eq.as_of", { value: asOf });
-      await authedWrite(session, setSession, "PATCH", "settings?key=eq.investment_source", { value: source });
-      await authedWrite(session, setSession, "PATCH", "settings?key=eq.dividends_interest", { value: String(dividends) });
       await refresh(); onDone();
     } catch (e) { setErr(e.message); setBusy(false); }
   }
 
   return (
-    <Card style={{ padding: 22, marginBottom: 24, background: "#FBF4EC", border: "1px solid #EFE7DD" }}>
-      <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 700, fontSize: 18, marginBottom: 14 }}>Edit investment figures</div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
-        {assets.map((a, i) => (
-          <div key={a.id ?? i}>
-            <label style={{ fontSize: 11, color: "#7C8C8A", display: "block", marginBottom: 3 }}>{a.name}</label>
-            <EdInput type="number" value={a.value} onChange={v => setAssets(assets.map((x, j) => j === i ? { ...x, value: v } : x))} />
-          </div>
-        ))}
+    <Card style={{ padding: 22, marginBottom: 24, background: "#FBF4EC" }}>
+      <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, marginBottom: 14 }}>Update the corpus</div>
+      <div style={{ display: "grid", gridTemplateColumns: narrowGrid(), gap: 14, marginBottom: 14, maxWidth: 520 }}>
         <div>
-          <label style={{ fontSize: 11, color: "#7C8C8A", display: "block", marginBottom: 3 }}>Dividends &amp; Interest</label>
-          <EdInput type="number" value={dividends} onChange={setDividends} />
+          <label style={{ fontSize: 12, color: "#7C8C8A", display: "block", marginBottom: 4, fontWeight: 700 }}>Total portfolio ($)</label>
+          <EdInput type="number" value={total} onChange={setTotal} />
         </div>
         <div>
-          <label style={{ fontSize: 11, color: "#7C8C8A", display: "block", marginBottom: 3 }}>As of</label>
+          <label style={{ fontSize: 12, color: "#7C8C8A", display: "block", marginBottom: 4, fontWeight: 700 }}>As of</label>
           <EdInput value={asOf} onChange={setAsOf} />
-        </div>
-        <div>
-          <label style={{ fontSize: 11, color: "#7C8C8A", display: "block", marginBottom: 3 }}>Source</label>
-          <EdInput value={source} onChange={setSource} />
         </div>
       </div>
       <div style={{ display: "flex", gap: 8 }}>
-        <MiniButton kind="save" onClick={save} disabled={busy}>{busy ? "Saving…" : "Save figures"}</MiniButton>
+        <MiniButton kind="save" onClick={save} disabled={busy}>{busy ? "Saving…" : "Save"}</MiniButton>
         <MiniButton kind="cancel" onClick={onDone} disabled={busy}>Cancel</MiniButton>
       </div>
       {err && <div style={{ color: "#B5451B", fontSize: 12, marginTop: 8 }}>{err}</div>}
     </Card>
   );
 }
+function narrowGrid() { return (typeof window !== "undefined" && window.innerWidth < 720) ? "1fr" : "1fr 1fr"; }
 
 function InvestmentsView({ narrow }) {
   const { investments } = useData();
   const { signedIn } = useAuth();
   const [editing, setEditing] = useState(false);
-  const data = investments.composition;
   const corpus = corpusTotal(investments);
-  const colors = ["#3A6B9C", TEAL, "#C8A020", "#7B5EA7", "#2E7D5E"];
   return (
     <div style={{ maxWidth: 1140, margin: "0 auto", padding: narrow ? "28px 16px" : "36px 40px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
-        <SectionTitle title="Investments" sub={"Corpus composition · " + investments.source + " · as of " + investments.asOf} />
+        <SectionTitle title="Investments" sub="The foundation's endowment — the corpus that's invested to grow and fund the giving" />
         {signedIn && !editing && <MiniButton kind="edit" onClick={() => setEditing(true)}>Edit figures</MiniButton>}
       </div>
 
       {signedIn && editing && <InvestmentEditor investments={investments} onDone={() => setEditing(false)} />}
 
-      <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "repeat(3, 1fr)", gap: 16, marginBottom: 28 }}>
-        <StatCard label="Total Corpus" value={fmtK(corpus)} sub={"as of " + investments.asOf} accent="#3A6B9C" />
-        <StatCard label="Dividends & Interest" value={fmt(investments.dividendsInterest)} sub="Schwab + Vanguard, annual" accent={TEAL} />
-        <StatCard label="Asset Classes" value={data.length} sub="managed, equities, cash" accent="#C8A020" />
-      </div>
+      <Card style={{ padding: narrow ? "32px 24px" : "48px 44px", textAlign: "center", marginTop: 8 }}>
+        <div style={{ fontFamily: FONT_BODY, fontWeight: 800, fontSize: 12, letterSpacing: "0.12em", textTransform: "uppercase", color: "#7C8C8A" }}>Total Corpus</div>
+        <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: narrow ? 56 : 72, color: TEAL, lineHeight: 1, margin: "10px 0 6px" }}>{fmtK(corpus)}</div>
+        <div style={{ fontFamily: FONT_ACCENT, fontWeight: 700, fontSize: 26, color: CORAL }}>invested for the long haul</div>
+        <div style={{ fontFamily: FONT_BODY, fontSize: 14, color: "#7C8C8A", marginTop: 14 }}>as of {investments.asOf}</div>
+      </Card>
 
-      <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "1fr 1fr", gap: 20 }}>
-        <Card style={{ padding: 24 }}>
-          <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 18, marginBottom: 20 }}>Asset Composition</div>
-          <ResponsiveContainer width="100%" height={280}>
-            <PieChart>
-              <Pie data={data} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={60} outerRadius={105} paddingAngle={2}>
-                {data.map((entry, i) => <Cell key={entry.name} fill={colors[i % colors.length]} />)}
-              </Pie>
-              <Tooltip formatter={v => fmt(v)} contentStyle={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 13 }} />
-              <Legend wrapperStyle={{ fontFamily: "'Nunito Sans', sans-serif", fontSize: 12 }} />
-            </PieChart>
-          </ResponsiveContainer>
-        </Card>
-        <Card style={{ padding: 24 }}>
-          <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 18, marginBottom: 20 }}>Breakdown</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            {data.map((a, i) => {
-              const pct = corpus ? Math.round((a.value / corpus) * 100) : 0;
-              return (
-                <div key={a.name}>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 13 }}>
-                    <span style={{ fontWeight: 500 }}>{a.name}</span>
-                    <span style={{ color: "#7C8C8A" }}>{fmt(a.value)} <span style={{ fontSize: 11 }}>({pct}%)</span></span>
-                  </div>
-                  <div style={{ height: 8, background: "#F3ECE3", borderRadius: 4 }}>
-                    <div style={{ height: 8, width: pct + "%", background: colors[i % colors.length], borderRadius: 4 }} />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          <div style={{ marginTop: 24, paddingTop: 18, borderTop: "1px solid #F3ECE3", fontSize: 12, color: "#7C8C8A", lineHeight: 1.5 }}>
-            Figures from the {investments.source}, reflecting balances as of {investments.asOf}. Returns net of estimated investment fees. Sign in and use <em>Edit figures</em> to update these after each annual statement.
-          </div>
-        </Card>
+      <div style={{ marginTop: 18, fontSize: 13, color: "#9B8E80", fontFamily: FONT_BODY, lineHeight: 1.6, maxWidth: 720 }}>
+        Held across the foundation's managed and brokerage accounts. Detailed statements and holdings are maintained privately in Addepar; this page shows the total only.
+        {signedIn && <> <span style={{ color: TEAL }}>You're signed in — use <em>Edit figures</em> to update the total and date.</span></>}
       </div>
     </div>
   );
