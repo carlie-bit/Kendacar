@@ -105,6 +105,22 @@ async function authedWrite(session, setSession, method, path, body) {
   return true;
 }
 
+// An authenticated READ (for admin-only tables like the submissions queue).
+async function authedGet(session, setSession, path) {
+  let s = session;
+  if (s && s.expires_at && s.expires_at < Date.now() + 60000) {
+    const r = await refreshSession(s); if (r) { s = r; setSession(r); saveSession(r); }
+  }
+  const doReq = tok => fetch(REST + path, { headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + tok } });
+  let res = await doReq(s.access_token);
+  if (res.status === 401) {
+    const r = await refreshSession(s);
+    if (r) { setSession(r); saveSession(r); res = await doReq(r.access_token); }
+  }
+  if (!res.ok) throw new Error("Load failed (" + res.status + ").");
+  return res.json();
+}
+
 // A public form submission (anyone may insert into the form tables).
 async function publicInsert(table, payload) {
   const res = await fetch(REST + table, {
@@ -1815,6 +1831,7 @@ function RequestGrantForm({ narrow, setView }) {
   const orgNames = useMemo(() => Array.from(new Set(grants.map(g => normalizeOrg(g.org)))).sort(), [grants]);
   const [org, setOrg] = useState("");
   const [requestedBy, setRequestedBy] = useState("");
+  const [email, setEmail] = useState("");
   const [amount, setAmount] = useState("");
   const [category, setCategory] = useState("");
   const [notes, setNotes] = useState("");
@@ -1829,6 +1846,7 @@ function RequestGrantForm({ narrow, setView }) {
     try {
       await publicInsert("grant_requests", {
         org: org.trim(), requested_by: requestedBy.trim(),
+        requester_email: email.trim() || null,
         amount: amount === "" ? null : Number(amount),
         category: category || null, notes: notes.trim() || null,
       });
@@ -1847,9 +1865,14 @@ function RequestGrantForm({ narrow, setView }) {
           <input list="org-options" value={org} onChange={e => setOrg(e.target.value)} placeholder="Organization name" style={formInput} />
           <datalist id="org-options">{orgNames.map(o => <option key={o} value={o} />)}</datalist>
         </FormField>
-        <FormField label="Your name">
-          <input value={requestedBy} onChange={e => setRequestedBy(e.target.value)} placeholder="Who's recommending this" style={formInput} />
-        </FormField>
+        <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "1fr 1fr", gap: 14 }}>
+          <FormField label="Your name">
+            <input value={requestedBy} onChange={e => setRequestedBy(e.target.value)} placeholder="Who's recommending this" style={formInput} />
+          </FormField>
+          <FormField label="Your email" hint="So we can let you know when it's sent.">
+            <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@email.com" style={formInput} />
+          </FormField>
+        </div>
         <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "1fr 1fr", gap: 14 }}>
           <FormField label="Suggested amount" hint="Optional">
             <input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="$" style={formInput} />
@@ -1917,6 +1940,113 @@ function ContributionForm({ narrow, setView }) {
 }
 
 // =============================================================================
+//  PROCESSING QUEUE  (signed-in trustees — recommendations to process)
+// =============================================================================
+
+function MarkSentRow({ req, onDone }) {
+  const { session, setSession } = useAuth();
+  const { refresh } = useData();
+  const today = new Date().toISOString().slice(0, 10);
+  const [amount, setAmount] = useState(req.amount != null ? req.amount : "");
+  const [date, setDate] = useState(today);
+  const [checkNo, setCheckNo] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function markSent() {
+    if (amount === "" || isNaN(Number(amount))) { setErr("Enter the amount that was sent."); return; }
+    setBusy(true); setErr("");
+    const yr = date ? Number(date.slice(0, 4)) : new Date().getFullYear();
+    try {
+      // 1) create the grant
+      await authedWrite(session, setSession, "POST", "grants",
+        { year: yr, org: req.org, amount: Number(amount), category: req.category || ORG_CATEGORIES[req.org] || "Community & Social Services" });
+      // 2) mark the recommendation as sent
+      await authedWrite(session, setSession, "PATCH", "grant_requests?id=eq." + req.id,
+        { status: "sent", check_date: date || null, check_number: checkNo.trim() || null, processed_at: new Date().toISOString() });
+      await refresh(); onDone();
+    } catch (e) { setErr(e.message); setBusy(false); }
+  }
+
+  return (
+    <div style={{ marginTop: 12, paddingTop: 14, borderTop: "1px dashed " + LINE }}>
+      <div style={{ display: "grid", gridTemplateColumns: narrow720() ? "1fr" : "1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
+        <div><label style={{ fontSize: 11, color: "#7C8C8A", fontWeight: 700, display: "block", marginBottom: 3 }}>Amount sent ($)</label><EdInput type="number" value={amount} onChange={setAmount} /></div>
+        <div><label style={{ fontSize: 11, color: "#7C8C8A", fontWeight: 700, display: "block", marginBottom: 3 }}>Date sent</label><EdInput type="date" value={date} onChange={setDate} /></div>
+        <div><label style={{ fontSize: 11, color: "#7C8C8A", fontWeight: 700, display: "block", marginBottom: 3 }}>Check # (optional)</label><EdInput value={checkNo} onChange={setCheckNo} /></div>
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <MiniButton kind="save" onClick={markSent} disabled={busy}>{busy ? "Posting…" : "Confirm — post grant"}</MiniButton>
+        <MiniButton kind="cancel" onClick={onDone} disabled={busy}>Cancel</MiniButton>
+      </div>
+      {err && <div style={{ color: "#B5451B", fontSize: 12, marginTop: 8 }}>{err}</div>}
+    </div>
+  );
+}
+
+function ProcessingQueue({ narrow, setView }) {
+  const { session, setSession } = useAuth();
+  const [items, setItems] = useState(null);
+  const [err, setErr] = useState("");
+  const [openId, setOpenId] = useState(null);
+
+  async function load() {
+    try { setItems(await authedGet(session, setSession, "grant_requests?status=eq.new&order=created_at.desc&select=id,org,amount,requested_by,requester_email,category,notes,created_at")); }
+    catch (e) { setErr(e.message); }
+  }
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+
+  async function dismiss(id) {
+    if (!window.confirm("Dismiss this recommendation? It won't be processed.")) return;
+    try { await authedWrite(session, setSession, "PATCH", "grant_requests?id=eq." + id, { status: "declined", processed_at: new Date().toISOString() }); load(); }
+    catch (e) { setErr(e.message); }
+  }
+  const after = () => { setOpenId(null); load(); };
+
+  return (
+    <div style={{ maxWidth: 880, margin: "0 auto", padding: narrow ? "28px 16px" : "36px 40px" }}>
+      <button onClick={() => setView("pulse")} style={{ background: "none", border: "none", color: TEAL, cursor: "pointer", fontSize: 13, fontWeight: 700, marginBottom: 16, fontFamily: FONT_BODY }}>&larr; Back to dashboard</button>
+      <SectionTitle title="Grant recommendations to process" sub="Family submissions waiting to be sent. Confirm one and it posts to the dashboard automatically." />
+
+      {err && <div style={{ color: "#B5451B", fontSize: 13, marginBottom: 12 }}>{err}</div>}
+      {items === null && !err && <div style={{ color: "#7C8C8A", fontFamily: FONT_BODY }}>Loading…</div>}
+      {items && items.length === 0 && (
+        <Card style={{ padding: "30px 24px", textAlign: "center", color: "#9B8E80", fontFamily: FONT_BODY }}>Nothing waiting — you're all caught up. 🎉</Card>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {(items || []).map(r => (
+          <Card key={r.id} style={{ padding: narrow ? "18px" : "20px 24px", borderLeft: "4px solid " + CORAL }}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, color: INK }}>{r.org}</div>
+                <div style={{ fontSize: 13, color: "#7C8C8A", fontFamily: FONT_BODY, marginTop: 3 }}>
+                  Recommended by {r.requested_by}{r.requester_email ? " · " + r.requester_email : ""} · {fmtDate(r.created_at)}
+                </div>
+                {r.category && <span style={{ display: "inline-block", marginTop: 8, background: (CAT_COLORS[r.category] || "#999") + "18", color: CAT_COLORS[r.category] || "#999", borderRadius: 20, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>{r.category}</span>}
+                {r.notes && <div style={{ fontSize: 13.5, color: INK, fontFamily: FONT_BODY, lineHeight: 1.55, marginTop: 10, maxWidth: 560 }}>{r.notes}</div>}
+              </div>
+              <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                <div style={{ fontSize: 11, color: "#7C8C8A", fontWeight: 700, fontFamily: FONT_BODY }}>SUGGESTED</div>
+                <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 24, color: TEAL }}>{r.amount != null ? fmt(r.amount) : "—"}</div>
+              </div>
+            </div>
+            {openId === r.id ? (
+              <MarkSentRow req={r} onDone={after} />
+            ) : (
+              <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+                <MiniButton kind="save" onClick={() => setOpenId(r.id)}>Mark sent →</MiniButton>
+                <MiniButton kind="delete" onClick={() => dismiss(r.id)}>Dismiss</MiniButton>
+              </div>
+            )}
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
 //  MAIN APP
 // =============================================================================
 
@@ -1979,7 +2109,8 @@ export default function App() {
 
           {auth.signedIn && (
             <div style={{ background: "#0E7A5F", color: "#fff", textAlign: "center", fontSize: 12, padding: "7px 16px", fontFamily: "'Nunito Sans', sans-serif" }}>
-              Edit mode — signed in as {auth.email}. Open <strong>Grants Made</strong>, <strong>Contributions</strong>, or <strong>Investments</strong> to make changes. ·{" "}
+              Edit mode — signed in as {auth.email}. ·{" "}
+              <button onClick={() => setView("queue")} style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 12, fontWeight: 700, textDecoration: "underline" }}>Review submissions</button> ·{" "}
               <button onClick={auth.signOut} style={{ background: "none", border: "none", color: "#CFEFE5", cursor: "pointer", fontSize: 12, fontWeight: 600, textDecoration: "underline" }}>Sign out</button>
             </div>
           )}
@@ -1992,6 +2123,7 @@ export default function App() {
           {view === "grantee-detail" && <GranteeDetail org={selectedOrg} setView={nav} goGrantee={goGrantee} narrow={narrow} />}
           {view === "request-grant"  && <RequestGrantForm narrow={narrow} setView={nav} />}
           {view === "contribute"     && <ContributionForm narrow={narrow} setView={nav} />}
+          {view === "queue"          && auth.signedIn && <ProcessingQueue narrow={narrow} setView={nav} />}
 
           <div style={{ padding: "32px 20px", textAlign: "center", fontSize: 11, color: "#7C8C8A", fontFamily: "'Fredoka', serif", letterSpacing: "0.08em" }}>
             KENDACAR FOUNDATION &middot; CONFIDENTIAL &middot; FOR FAMILY USE ONLY
