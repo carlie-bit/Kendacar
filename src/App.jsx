@@ -179,6 +179,7 @@ async function fetchLiveData() {
       asOf: setMap.as_of || "",
       source: setMap.investment_source || "",
       dividendsInterest: Number(setMap.dividends_interest || 0),
+      accounts: Number(setMap.num_accounts || 0),
       composition: assets.map(a => ({ id: a.id, name: a.name, value: Number(a.value) })),
     },
     granteeNotes: noteMap,
@@ -487,14 +488,15 @@ const DONATIONS_RECEIVED = [
 // =============================================================================
 
 const FALLBACK_INVESTMENTS = {
-  asOf: "August 2025",
-  source: "2024 Form 990-PF",
+  asOf: "June 14, 2026",
+  source: "Addepar portfolio",
+  accounts: 4,
   composition: [
-    { name: "Managed Investments (Schwab)", value: 1600000 },
-    { name: "Individual Equities",          value: 1400000 },
-    { name: "Cash & Equivalents",           value: 680000 },
+    { name: "Equities",     value: 5204689 },
+    { name: "Fixed Income", value: 236764 },
+    { name: "Cash",         value: 57195 },
   ],
-  dividendsInterest: 81887,
+  dividendsInterest: 0,
 };
 
 // =============================================================================
@@ -1022,29 +1024,38 @@ function PulseLanding({ setView, goGrantee, narrow }) {
 function InvestmentEditor({ investments, onDone }) {
   const { session, setSession } = useAuth();
   const { refresh } = useData();
-  const asset = investments.composition[0] || null;
-  const [total, setTotal] = useState(asset ? asset.value : corpusTotal(investments));
+  const [assets, setAssets] = useState(investments.composition.map(a => ({ ...a })));
   const [asOf, setAsOf] = useState(investments.asOf);
+  const [accounts, setAccounts] = useState(investments.accounts || 0);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
   async function save() {
     setBusy(true); setErr("");
     try {
-      if (asset && asset.id != null) await authedWrite(session, setSession, "PATCH", "investment_assets?id=eq." + asset.id, { name: "Total Portfolio", value: Number(total) });
-      else await authedWrite(session, setSession, "POST", "investment_assets", { name: "Total Portfolio", value: Number(total), sort_order: 0 });
+      for (const a of assets) {
+        if (a.id != null) await authedWrite(session, setSession, "PATCH", "investment_assets?id=eq." + a.id, { value: Number(a.value) });
+      }
       await authedWrite(session, setSession, "PATCH", "settings?key=eq.as_of", { value: asOf });
+      await authedWrite(session, setSession, "PATCH", "settings?key=eq.num_accounts", { value: String(accounts) });
       await refresh(); onDone();
     } catch (e) { setErr(e.message); setBusy(false); }
   }
 
   return (
     <Card style={{ padding: 22, marginBottom: 24, background: "#FBF4EC" }}>
-      <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, marginBottom: 14 }}>Update the corpus</div>
-      <div style={{ display: "grid", gridTemplateColumns: narrowGrid(), gap: 14, marginBottom: 14, maxWidth: 520 }}>
+      <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, marginBottom: 4 }}>Update investment figures</div>
+      <div style={{ fontSize: 12, color: "#9B8E80", marginBottom: 14 }}>Enter the value per asset class — the total updates automatically.</div>
+      <div style={{ display: "grid", gridTemplateColumns: narrow720() ? "1fr" : "repeat(2,1fr)", gap: 12, marginBottom: 14, maxWidth: 560 }}>
+        {assets.map((a, i) => (
+          <div key={a.id ?? i}>
+            <label style={{ fontSize: 12, color: "#7C8C8A", display: "block", marginBottom: 4, fontWeight: 700 }}>{a.name} ($)</label>
+            <EdInput type="number" value={a.value} onChange={v => setAssets(assets.map((x, j) => j === i ? { ...x, value: v } : x))} />
+          </div>
+        ))}
         <div>
-          <label style={{ fontSize: 12, color: "#7C8C8A", display: "block", marginBottom: 4, fontWeight: 700 }}>Total portfolio ($)</label>
-          <EdInput type="number" value={total} onChange={setTotal} />
+          <label style={{ fontSize: 12, color: "#7C8C8A", display: "block", marginBottom: 4, fontWeight: 700 }}># of accounts</label>
+          <EdInput type="number" value={accounts} onChange={setAccounts} />
         </div>
         <div>
           <label style={{ fontSize: 12, color: "#7C8C8A", display: "block", marginBottom: 4, fontWeight: 700 }}>As of</label>
@@ -1052,39 +1063,74 @@ function InvestmentEditor({ investments, onDone }) {
         </div>
       </div>
       <div style={{ display: "flex", gap: 8 }}>
-        <MiniButton kind="save" onClick={save} disabled={busy}>{busy ? "Saving…" : "Save"}</MiniButton>
+        <MiniButton kind="save" onClick={save} disabled={busy}>{busy ? "Saving…" : "Save figures"}</MiniButton>
         <MiniButton kind="cancel" onClick={onDone} disabled={busy}>Cancel</MiniButton>
       </div>
       {err && <div style={{ color: "#B5451B", fontSize: 12, marginTop: 8 }}>{err}</div>}
     </Card>
   );
 }
-function narrowGrid() { return (typeof window !== "undefined" && window.innerWidth < 720) ? "1fr" : "1fr 1fr"; }
+function narrow720() { return typeof window !== "undefined" && window.innerWidth < 720; }
 
 function InvestmentsView({ narrow }) {
   const { investments } = useData();
   const { signedIn } = useAuth();
   const [editing, setEditing] = useState(false);
+  const data = investments.composition;
   const corpus = corpusTotal(investments);
+  const classColor = { "Equities": TEAL, "Fixed Income": "#3A6B9C", "Cash": SUN, "Managed Investments (Schwab)": TEAL };
+  const colors = [TEAL, "#3A6B9C", SUN, CORAL, "#7B5EA7"];
+  const colorOf = (name, i) => classColor[name] || colors[i % colors.length];
   return (
     <div style={{ maxWidth: 1140, margin: "0 auto", padding: narrow ? "28px 16px" : "36px 40px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
-        <SectionTitle title="Investments" sub="The foundation's endowment — the corpus that's invested to grow and fund the giving" />
+        <SectionTitle title="Investments" sub={"The foundation's endowment — invested to grow and fund the giving · as of " + investments.asOf} />
         {signedIn && !editing && <MiniButton kind="edit" onClick={() => setEditing(true)}>Edit figures</MiniButton>}
       </div>
 
       {signedIn && editing && <InvestmentEditor investments={investments} onDone={() => setEditing(false)} />}
 
-      <Card style={{ padding: narrow ? "32px 24px" : "48px 44px", textAlign: "center", marginTop: 8 }}>
-        <div style={{ fontFamily: FONT_BODY, fontWeight: 800, fontSize: 12, letterSpacing: "0.12em", textTransform: "uppercase", color: "#7C8C8A" }}>Total Corpus</div>
-        <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: narrow ? 56 : 72, color: TEAL, lineHeight: 1, margin: "10px 0 6px" }}>{fmtK(corpus)}</div>
-        <div style={{ fontFamily: FONT_ACCENT, fontWeight: 700, fontSize: 26, color: CORAL }}>invested for the long haul</div>
-        <div style={{ fontFamily: FONT_BODY, fontSize: 14, color: "#7C8C8A", marginTop: 14 }}>as of {investments.asOf}</div>
-      </Card>
+      <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "repeat(3, 1fr)", gap: 16, marginBottom: 24 }}>
+        <StatCard label="Total Corpus" value={fmtK(corpus)} sub={"as of " + investments.asOf} accent={TEAL} />
+        <StatCard label="Accounts" value={investments.accounts || "—"} sub="managed & brokerage" accent={CORAL} />
+        <StatCard label="Asset Classes" value={data.length} sub="equities, fixed income, cash" accent={SUN} />
+      </div>
 
-      <div style={{ marginTop: 18, fontSize: 13, color: "#9B8E80", fontFamily: FONT_BODY, lineHeight: 1.6, maxWidth: 720 }}>
-        Held across the foundation's managed and brokerage accounts. Detailed statements and holdings are maintained privately in Addepar; this page shows the total only.
-        {signedIn && <> <span style={{ color: TEAL }}>You're signed in — use <em>Edit figures</em> to update the total and date.</span></>}
+      <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "1fr 1fr", gap: 20 }}>
+        <Card style={{ padding: 24 }}>
+          <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, marginBottom: 20 }}>Asset Allocation</div>
+          <ResponsiveContainer width="100%" height={280}>
+            <PieChart>
+              <Pie data={data} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={62} outerRadius={106} paddingAngle={2}>
+                {data.map((entry, i) => <Cell key={entry.name} fill={colorOf(entry.name, i)} />)}
+              </Pie>
+              <Tooltip formatter={v => fmt(v)} contentStyle={{ fontFamily: FONT_BODY, fontSize: 13 }} />
+              <Legend wrapperStyle={{ fontFamily: FONT_BODY, fontSize: 12 }} />
+            </PieChart>
+          </ResponsiveContainer>
+        </Card>
+        <Card style={{ padding: 24 }}>
+          <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, marginBottom: 20 }}>Breakdown</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            {data.map((a, i) => {
+              const pct = corpus ? Math.round((a.value / corpus) * 100) : 0;
+              return (
+                <div key={a.name}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5, fontSize: 14 }}>
+                    <span style={{ fontWeight: 600, fontFamily: FONT_BODY }}>{a.name}</span>
+                    <span style={{ color: "#7C8C8A", fontFamily: FONT_BODY }}>{fmtK(a.value)} <span style={{ fontSize: 12 }}>({pct}%)</span></span>
+                  </div>
+                  <div style={{ height: 9, background: "#F3ECE3", borderRadius: 5 }}>
+                    <div style={{ height: 9, width: pct + "%", background: colorOf(a.name, i), borderRadius: 5 }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ marginTop: 24, paddingTop: 18, borderTop: "1px solid " + LINE, fontSize: 12, color: "#9B8E80", lineHeight: 1.55 }}>
+            By asset class, as of {investments.asOf}. Account-level statements and individual holdings stay private in Addepar — this page shows allocation only.
+          </div>
+        </Card>
       </div>
     </div>
   );
