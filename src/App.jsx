@@ -116,19 +116,30 @@ async function publicInsert(table, payload) {
   return true;
 }
 
-// Upload a photo to the grantee-photos bucket (admin only); returns its public URL.
-async function uploadPhoto(session, file, org) {
+// Upload any file (photo, PDF, doc…) to the grantee-photos bucket (admin only).
+// Returns { url, name, type } so the feed can render images inline and other
+// files as a download link.
+async function uploadFile(session, file, org) {
   const safe = (org || "grantee").toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40);
-  const ext = (file.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const ext = (file.name.split(".").pop() || "bin").toLowerCase().replace(/[^a-z0-9]/g, "");
   const path = safe + "/" + Date.now() + "-" + Math.random().toString(36).slice(2, 8) + "." + ext;
-  const res = await fetch(SUPABASE_URL + "/storage/v1/object/grantee-photos/" + path, {
+  const res = await fetch(SUPABASE_URL + "/storage/v1/object/grantee-photos/" + encodeURIComponent(path), {
     method: "POST",
     headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + session.access_token, "Content-Type": file.type || "application/octet-stream" },
     body: file,
   });
-  if (!res.ok) throw new Error("Photo upload failed (" + res.status + "). " + (await res.text().catch(() => "")));
-  return SUPABASE_URL + "/storage/v1/object/public/grantee-photos/" + path;
+  if (!res.ok) throw new Error("Upload failed (" + res.status + "). " + (await res.text().catch(() => "")));
+  return { url: SUPABASE_URL + "/storage/v1/object/public/grantee-photos/" + path, name: file.name, type: file.type || "" };
 }
+
+// Is this attachment an image? Handles both legacy bare-URL strings and {url,name,type} objects.
+function attIsImage(a) {
+  if (typeof a === "string") return /\.(png|jpe?g|gif|webp|heic|avif|bmp)$/i.test(a);
+  if (a && a.type && a.type.startsWith("image/")) return true;
+  return /\.(png|jpe?g|gif|webp|heic|avif|bmp)$/i.test((a && (a.url || a.name)) || "");
+}
+const attUrl = a => (typeof a === "string" ? a : a.url);
+const attName = a => (typeof a === "string" ? a.split("/").pop() : (a.name || a.url.split("/").pop()));
 
 // ---- auth context ----
 const AuthContext = createContext(null);
@@ -1547,14 +1558,14 @@ function UpdateComposer({ org, onDone }) {
   const [err, setErr] = useState("");
 
   async function post() {
-    if (!body.trim() && !title.trim() && files.length === 0) { setErr("Add a note or a photo."); return; }
+    if (!body.trim() && !title.trim() && files.length === 0) { setErr("Add a note or a file."); return; }
     setBusy(true); setErr("");
     try {
-      const urls = [];
-      for (const file of files) urls.push(await uploadPhoto(session, file, org));
+      const atts = [];
+      for (const file of files) atts.push(await uploadFile(session, file, org));
       await authedWrite(session, setSession, "POST", "grantee_updates", {
         org, title: title.trim() || null, body: body.trim() || null,
-        author: session.email, photos: urls,
+        author: session.email, photos: atts,
       });
       await refresh(); onDone();
     } catch (e) { setErr(e.message); setBusy(false); }
@@ -1565,8 +1576,9 @@ function UpdateComposer({ org, onDone }) {
       <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, marginBottom: 12 }}>Post an update</div>
       <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Title (optional)" style={{ ...formInput, fontSize: 14, padding: "9px 12px", marginBottom: 10 }} />
       <textarea value={body} onChange={e => setBody(e.target.value)} rows={3} placeholder="What's the latest with this grantee?" style={{ ...formInput, fontSize: 14, padding: "9px 12px", resize: "vertical", marginBottom: 10 }} />
-      <input type="file" accept="image/*" multiple onChange={e => setFiles(Array.from(e.target.files || []))} style={{ fontSize: 13, fontFamily: FONT_BODY, marginBottom: 6 }} />
-      {files.length > 0 && <div style={{ fontSize: 12, color: "#7C8C8A", marginBottom: 10 }}>{files.length} photo{files.length > 1 ? "s" : ""} selected</div>}
+      <input type="file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv" multiple onChange={e => setFiles(Array.from(e.target.files || []))} style={{ fontSize: 13, fontFamily: FONT_BODY, marginBottom: 6 }} />
+      <div style={{ fontSize: 12, color: "#9B8E80", marginBottom: 6 }}>Photos, PDFs, or documents — attach as many as you like.</div>
+      {files.length > 0 && <div style={{ fontSize: 12, color: "#7C8C8A", marginBottom: 10 }}>{files.length} file{files.length > 1 ? "s" : ""} selected</div>}
       <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
         <MiniButton kind="save" onClick={post} disabled={busy}>{busy ? "Posting…" : "Post update"}</MiniButton>
         <MiniButton kind="cancel" onClick={onDone} disabled={busy}>Cancel</MiniButton>
@@ -1703,7 +1715,7 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
 
         {updates.length === 0 && !composing && (
           <Card style={{ padding: "28px 24px", textAlign: "center", color: "#9B8E80", fontFamily: FONT_BODY, fontSize: 14 }}>
-            No updates yet.{signedIn ? " Post the first one — a note and a few photos." : ""}
+            No updates yet.{signedIn ? " Post the first one — a note, photos, or a document." : ""}
           </Card>
         )}
 
@@ -1715,15 +1727,36 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
                 <div style={{ fontSize: 12, color: "#9B8E80", fontFamily: FONT_BODY }}>{fmtDate(u.created_at)}{u.author ? " · " + u.author : ""}</div>
               </div>
               {u.body && <div style={{ fontSize: 14.5, color: INK, lineHeight: 1.6, marginTop: u.title ? 8 : 0, fontFamily: FONT_BODY, whiteSpace: "pre-wrap" }}>{u.body}</div>}
-              {u.photos && u.photos.length > 0 && (
-                <div style={{ display: "grid", gridTemplateColumns: narrow ? "repeat(2,1fr)" : "repeat(auto-fill, minmax(150px, 1fr))", gap: 10, marginTop: 14 }}>
-                  {u.photos.map((src, i) => (
-                    <a key={i} href={src} target="_blank" rel="noopener noreferrer" style={{ display: "block" }}>
-                      <img src={src} alt="" loading="lazy" style={{ width: "100%", height: 140, objectFit: "cover", borderRadius: 12, border: "1px solid " + LINE, display: "block" }} />
-                    </a>
-                  ))}
-                </div>
-              )}
+              {u.photos && u.photos.length > 0 && (() => {
+                const imgs = u.photos.filter(attIsImage);
+                const docs = u.photos.filter(a => !attIsImage(a));
+                return (
+                  <>
+                    {imgs.length > 0 && (
+                      <div style={{ display: "grid", gridTemplateColumns: narrow ? "repeat(2,1fr)" : "repeat(auto-fill, minmax(150px, 1fr))", gap: 10, marginTop: 14 }}>
+                        {imgs.map((a, i) => (
+                          <a key={i} href={attUrl(a)} target="_blank" rel="noopener noreferrer" style={{ display: "block" }}>
+                            <img src={attUrl(a)} alt="" loading="lazy" style={{ width: "100%", height: 140, objectFit: "cover", borderRadius: 12, border: "1px solid " + LINE, display: "block" }} />
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                    {docs.length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 14 }}>
+                        {docs.map((a, i) => (
+                          <a key={i} href={attUrl(a)} target="_blank" rel="noopener noreferrer" style={{
+                            display: "inline-flex", alignItems: "center", gap: 8, background: "#FBF4EC", border: "1px solid " + LINE,
+                            borderRadius: 10, padding: "9px 13px", textDecoration: "none", color: INK, fontFamily: FONT_BODY, fontSize: 13.5, fontWeight: 600,
+                          }}>
+                            <span style={{ color: CORAL, fontWeight: 700 }}>📄</span>
+                            <span style={{ maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{attName(a)}</span>
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
             </Card>
           ))}
         </div>
