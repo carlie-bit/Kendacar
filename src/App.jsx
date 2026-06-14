@@ -1,11 +1,59 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, createContext, useContext } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend, LineChart, Line, CartesianGrid, Area, AreaChart
 } from "recharts";
 
 // =============================================================================
-//  REAL GRANT DATA - Kendacar Foundation 2001-2025
+//  SUPABASE — live data source
+//  The dashboard reads from these tables on load. Edit rows in the Supabase
+//  table editor and the changes appear here on the next refresh — no rebuild,
+//  no git push. If Supabase is ever unreachable, the hard-coded FALLBACK data
+//  below keeps the site working.
+// =============================================================================
+
+const SUPABASE_URL = "https://kdmtjvbgeqcjipdnfwty.supabase.co";
+const SUPABASE_KEY = "sb_publishable_tWKd0z8dbr2cAfExI11pPw_7ACCfjqa";
+
+async function sb(path) {
+  const res = await fetch(SUPABASE_URL + "/rest/v1/" + path, {
+    headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + SUPABASE_KEY },
+  });
+  if (!res.ok) throw new Error("Supabase " + res.status);
+  return res.json();
+}
+
+// Pull every display table in parallel and shape it like the fallback data.
+async function fetchLiveData() {
+  const [grants, donations, assets, settings, notes] = await Promise.all([
+    sb("grants?select=year,org,amount,category"),
+    sb("donations?select=year,donor,amount"),
+    sb("investment_assets?select=name,value,sort_order&order=sort_order"),
+    sb("settings?select=key,value"),
+    sb("grantee_notes?select=org,contact,website,note"),
+  ]);
+  const setMap = Object.fromEntries(settings.map(s => [s.key, s.value]));
+  const noteMap = {};
+  notes.forEach(n => { noteMap[n.org] = { contact: n.contact, website: n.website, note: n.note }; });
+  return {
+    grants: grants.map(g => ({
+      year: Number(g.year), org: g.org, amount: Number(g.amount),
+      category: g.category || ORG_CATEGORIES[g.org] || "Community & Social Services",
+    })),
+    donations: donations.map(d => ({ year: Number(d.year), donor: d.donor, amount: Number(d.amount) })),
+    investments: {
+      asOf: setMap.as_of || "",
+      source: setMap.investment_source || "",
+      dividendsInterest: Number(setMap.dividends_interest || 0),
+      composition: assets.map(a => ({ name: a.name, value: Number(a.value) })),
+    },
+    granteeNotes: noteMap,
+  };
+}
+
+// =============================================================================
+//  FALLBACK GRANT DATA - Kendacar Foundation 2001-2025
+//  (used only if Supabase can't be reached)
 // =============================================================================
 
 const ORG_CATEGORIES = {
@@ -303,7 +351,7 @@ const DONATIONS_RECEIVED = [
 //      Update the four numbers below and the dashboard recalculates. ---
 // =============================================================================
 
-const INVESTMENTS = {
+const FALLBACK_INVESTMENTS = {
   asOf: "August 2025",
   source: "2024 Form 990-PF",
   composition: [
@@ -313,19 +361,30 @@ const INVESTMENTS = {
   ],
   dividendsInterest: 81887,
 };
-const CORPUS_TOTAL = INVESTMENTS.composition.reduce((s, a) => s + a.value, 0);
 
 // =============================================================================
-//  GRANTEE NOTES  (optional context shown on a grantee's detail page)
+//  FALLBACK GRANTEE NOTES  (optional context shown on a grantee's detail page)
 // =============================================================================
 
-const GRANTEE_NOTES = {
+const FALLBACK_GRANTEE_NOTES = {
   "CASA of McHenry County": {
     contact: "Becky Morris, Executive Director",
     website: "https://www.casamchenrycounty.org",
     note: "Kendacar's 2026 commitment represents a meaningful share of CASA's annual operating budget. Becky Morris is providing progress benchmarks tied to the grant.",
   },
 };
+
+// The bundle the app starts with (instantly visible), replaced by live Supabase
+// data once it loads.
+const FALLBACK_DATA = {
+  grants: GRANTS,
+  donations: DONATIONS_RECEIVED,
+  investments: FALLBACK_INVESTMENTS,
+  granteeNotes: FALLBACK_GRANTEE_NOTES,
+};
+
+const DataContext = createContext(FALLBACK_DATA);
+const useData = () => useContext(DataContext);
 
 // =============================================================================
 //  FORMS  (repoint these to your live Google Form when ready)
@@ -367,13 +426,13 @@ function normalizeOrg(org) {
   return o;
 }
 
-const ALL_YEARS = ["All Years", ...Array.from(new Set(GRANTS.map(g => g.year))).sort((a,b) => b-a)];
-const ALL_ORGS  = ["All Organizations", ...Array.from(new Set(GRANTS.map(g => g.org))).sort()];
-const ALL_CATS  = ["All Categories", ...Array.from(new Set(GRANTS.map(g => g.category))).sort()];
-
-const TOTAL_GRANTED = GRANTS.reduce((s, g) => s + g.amount, 0);
-const TOTAL_RECEIVED = DONATIONS_RECEIVED.reduce((s, d) => s + d.amount, 0);
-const CURRENT_CYCLE_YEAR = Math.max(...GRANTS.map(g => g.year));
+// Derived values — computed from whatever data is current (fallback or live).
+const yearOptions = grants => ["All Years", ...Array.from(new Set(grants.map(g => g.year))).sort((a,b) => b-a)];
+const orgOptions  = grants => ["All Organizations", ...Array.from(new Set(grants.map(g => g.org))).sort()];
+const catOptions  = grants => ["All Categories", ...Array.from(new Set(grants.map(g => g.category))).sort()];
+const sumAmount   = rows => rows.reduce((s, r) => s + Number(r.amount), 0);
+const corpusTotal = investments => investments.composition.reduce((s, a) => s + Number(a.value), 0);
+const currentCycleYear = grants => grants.length ? Math.max(...grants.map(g => g.year)) : new Date().getFullYear();
 
 // =============================================================================
 //  HOOKS
@@ -505,13 +564,18 @@ function FlowNode({ label, value, sub, big }) {
 }
 
 function PulseLanding({ setView, goGrantee, narrow }) {
-  const cycleGrants = GRANTS.filter(g => g.year === CURRENT_CYCLE_YEAR).sort((a, b) => b.amount - a.amount);
+  const { grants, donations, investments } = useData();
+  const cycleYear = currentCycleYear(grants);
+  const totalGranted = sumAmount(grants);
+  const totalReceived = sumAmount(donations);
+  const corpus = corpusTotal(investments);
+  const cycleGrants = grants.filter(g => g.year === cycleYear).sort((a, b) => b.amount - a.amount);
   const cycleTotal = cycleGrants.reduce((s, g) => s + g.amount, 0);
 
   const explore = [
-    { id: "investments",   title: "Investments",   desc: CORPUS_TOTAL ? fmtK(CORPUS_TOTAL) + " corpus, by asset class" : "Corpus & holdings", accent: "#3A6B9C" },
-    { id: "grants",        title: "Grants Made",    desc: fmt(TOTAL_GRANTED) + " across 175+ grants", accent: TEAL },
-    { id: "contributions", title: "Contributions",  desc: fmt(TOTAL_RECEIVED) + " given into the fund", accent: "#C8A020" },
+    { id: "investments",   title: "Investments",   desc: corpus ? fmtK(corpus) + " corpus, by asset class" : "Corpus & holdings", accent: "#3A6B9C" },
+    { id: "grants",        title: "Grants Made",    desc: fmt(totalGranted) + " across " + grants.length + " grants", accent: TEAL },
+    { id: "contributions", title: "Contributions",  desc: fmt(totalReceived) + " given into the fund", accent: "#C8A020" },
     { id: "grantees",      title: "Grantees",       desc: "Every organization, ranked by support", accent: "#7B5EA7" },
   ];
 
@@ -529,11 +593,11 @@ function PulseLanding({ setView, goGrantee, narrow }) {
           </p>
 
           <div style={{ display: "flex", alignItems: "center", gap: narrow ? 4 : 16, marginTop: 40, flexWrap: narrow ? "wrap" : "nowrap" }}>
-            <FlowNode label="Contributed In" value={fmtK(TOTAL_RECEIVED)} sub="since 2000" />
+            <FlowNode label="Contributed In" value={fmtK(totalReceived)} sub="since 2000" />
             <div style={{ fontSize: 28, color: "#5FA3A3", padding: narrow ? "0 4px" : "0 8px" }}>&rarr;</div>
-            <FlowNode label="Corpus Today" value={fmtK(CORPUS_TOTAL)} sub={"as of " + INVESTMENTS.asOf} big />
+            <FlowNode label="Corpus Today" value={fmtK(corpus)} sub={"as of " + investments.asOf} big />
             <div style={{ fontSize: 28, color: "#5FA3A3", padding: narrow ? "0 4px" : "0 8px" }}>&rarr;</div>
-            <FlowNode label="Granted Out" value={fmtK(TOTAL_GRANTED)} sub="all-time" />
+            <FlowNode label="Granted Out" value={fmtK(totalGranted)} sub="all-time" />
           </div>
         </div>
       </div>
@@ -541,14 +605,14 @@ function PulseLanding({ setView, goGrantee, narrow }) {
       <div style={{ maxWidth: 1140, margin: "0 auto", padding: narrow ? "28px 16px" : "36px 40px" }}>
         {/* Current giving cycle */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
-          <SectionTitle title={CURRENT_CYCLE_YEAR + " Giving Cycle"} sub={cycleGrants.length + " grants · " + fmt(cycleTotal) + " committed this cycle"} />
+          <SectionTitle title={cycleYear + " Giving Cycle"} sub={cycleGrants.length + " grants · " + fmt(cycleTotal) + " committed this cycle"} />
           <button onClick={() => setView("grants")} style={{ background: "none", border: "none", color: TEAL, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'DM Sans', sans-serif" }}>View all grants &rarr;</button>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "repeat(auto-fill, minmax(210px, 1fr))", gap: 14, marginBottom: 40 }}>
-          {cycleGrants.map(g => {
+          {cycleGrants.map((g, i) => {
             const c = CAT_COLORS[g.category] || "#999";
             return (
-              <button key={g.id} onClick={() => goGrantee(normalizeOrg(g.org))} style={{
+              <button key={g.org + i} onClick={() => goGrantee(normalizeOrg(g.org))} style={{
                 textAlign: "left", background: "#fff", border: "1px solid #C8E8E8", borderLeft: "4px solid " + c,
                 borderRadius: 10, padding: "16px 18px", cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
               }}>
@@ -602,15 +666,17 @@ function PulseLanding({ setView, goGrantee, narrow }) {
 // =============================================================================
 
 function InvestmentsView({ narrow }) {
-  const data = INVESTMENTS.composition;
-  const colors = ["#3A6B9C", TEAL, "#C8A020"];
+  const { investments } = useData();
+  const data = investments.composition;
+  const corpus = corpusTotal(investments);
+  const colors = ["#3A6B9C", TEAL, "#C8A020", "#7B5EA7", "#2E7D5E"];
   return (
     <div style={{ maxWidth: 1140, margin: "0 auto", padding: narrow ? "28px 16px" : "36px 40px" }}>
-      <SectionTitle title="Investments" sub={"Corpus composition · " + INVESTMENTS.source + " · as of " + INVESTMENTS.asOf} />
+      <SectionTitle title="Investments" sub={"Corpus composition · " + investments.source + " · as of " + investments.asOf} />
 
       <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "repeat(3, 1fr)", gap: 16, marginBottom: 28 }}>
-        <StatCard label="Total Corpus" value={fmtK(CORPUS_TOTAL)} sub={"as of " + INVESTMENTS.asOf} accent="#3A6B9C" />
-        <StatCard label="Dividends & Interest" value={fmt(INVESTMENTS.dividendsInterest)} sub="Schwab + Vanguard, annual" accent={TEAL} />
+        <StatCard label="Total Corpus" value={fmtK(corpus)} sub={"as of " + investments.asOf} accent="#3A6B9C" />
+        <StatCard label="Dividends & Interest" value={fmt(investments.dividendsInterest)} sub="Schwab + Vanguard, annual" accent={TEAL} />
         <StatCard label="Asset Classes" value={data.length} sub="managed, equities, cash" accent="#C8A020" />
       </div>
 
@@ -631,7 +697,7 @@ function InvestmentsView({ narrow }) {
           <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 600, fontSize: 18, marginBottom: 20 }}>Breakdown</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             {data.map((a, i) => {
-              const pct = Math.round((a.value / CORPUS_TOTAL) * 100);
+              const pct = corpus ? Math.round((a.value / corpus) * 100) : 0;
               return (
                 <div key={a.name}>
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 13 }}>
@@ -646,7 +712,7 @@ function InvestmentsView({ narrow }) {
             })}
           </div>
           <div style={{ marginTop: 24, paddingTop: 18, borderTop: "1px solid #EAF5F5", fontSize: 12, color: "#7A9898", lineHeight: 1.5 }}>
-            Figures from the {INVESTMENTS.source}, reflecting balances as of {INVESTMENTS.asOf}. Returns net of estimated investment fees. Update the four numbers at the top of <code style={{ background: "#EAF5F5", padding: "1px 5px", borderRadius: 4 }}>App.jsx</code> after each annual statement.
+            Figures from the {investments.source}, reflecting balances as of {investments.asOf}. Returns net of estimated investment fees. Edit these in the <code style={{ background: "#EAF5F5", padding: "1px 5px", borderRadius: 4 }}>investment_assets</code> and <code style={{ background: "#EAF5F5", padding: "1px 5px", borderRadius: 4 }}>settings</code> tables in Supabase after each annual statement.
           </div>
         </Card>
       </div>
@@ -659,33 +725,39 @@ function InvestmentsView({ narrow }) {
 // =============================================================================
 
 function GrantsView({ narrow }) {
+  const { grants } = useData();
   const [yearFilter, setYearFilter] = useState("All Years");
   const [orgFilter,  setOrgFilter]  = useState("All Organizations");
   const [catFilter,  setCatFilter]  = useState("All Categories");
   const [tab, setTab] = useState("grants");
 
-  const filtered = useMemo(() => GRANTS.filter(g => {
+  const ALL_YEARS = useMemo(() => yearOptions(grants), [grants]);
+  const ALL_ORGS  = useMemo(() => orgOptions(grants),  [grants]);
+  const ALL_CATS  = useMemo(() => catOptions(grants),  [grants]);
+  const totalGranted = sumAmount(grants);
+
+  const filtered = useMemo(() => grants.filter(g => {
     if (yearFilter !== "All Years" && g.year !== Number(yearFilter)) return false;
     if (orgFilter  !== "All Organizations" && g.org !== orgFilter)   return false;
     if (catFilter  !== "All Categories" && g.category !== catFilter) return false;
     return true;
-  }), [yearFilter, orgFilter, catFilter]);
+  }), [grants, yearFilter, orgFilter, catFilter]);
 
   const totalGiven = filtered.reduce((s, g) => s + g.amount, 0);
   const uniqueOrgs = new Set(filtered.map(g => g.org)).size;
 
   const yoyData = useMemo(() => {
     const byYear = {};
-    GRANTS.forEach(g => { byYear[g.year] = (byYear[g.year] || 0) + g.amount; });
+    grants.forEach(g => { byYear[g.year] = (byYear[g.year] || 0) + g.amount; });
     return Object.entries(byYear).sort((a,b) => a[0]-b[0]).map(([yr, amt]) => ({ year: yr, amount: amt }));
-  }, []);
+  }, [grants]);
 
   const orgHistory = useMemo(() => {
     if (orgFilter === "All Organizations") return [];
     const byYear = {};
-    GRANTS.filter(g => g.org === orgFilter).forEach(g => { byYear[g.year] = (byYear[g.year] || 0) + g.amount; });
+    grants.filter(g => g.org === orgFilter).forEach(g => { byYear[g.year] = (byYear[g.year] || 0) + g.amount; });
     return Object.entries(byYear).sort((a,b) => a[0]-b[0]).map(([yr, amt]) => ({ year: yr, amount: amt }));
-  }, [orgFilter]);
+  }, [grants, orgFilter]);
 
   const catData = useMemo(() => {
     const byCat = {};
@@ -720,7 +792,7 @@ function GrantsView({ narrow }) {
       <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "repeat(3, 1fr)", gap: 16, marginBottom: 24 }}>
         <StatCard label="Grants in View" value={fmt(totalGiven)} sub={filtered.length + " grants"} accent={TEAL} />
         <StatCard label="Organizations" value={uniqueOrgs} sub="unique grantees" accent="#C8A020" />
-        <StatCard label="All-Time Granted" value={fmt(TOTAL_GRANTED)} sub="2001 to present" accent="#3A6B9C" />
+        <StatCard label="All-Time Granted" value={fmt(totalGranted)} sub="2001 to present" accent="#3A6B9C" />
       </div>
 
       {/* Sub-tabs */}
@@ -748,7 +820,7 @@ function GrantsView({ narrow }) {
               <tbody>
                 {filtered.length === 0 && <tr><td colSpan={4} style={{ padding: 32, textAlign: "center", color: "#5A8080" }}>No grants match your filters.</td></tr>}
                 {filtered.slice().sort((a, b) => b.year - a.year || b.amount - a.amount).map((g, i) => (
-                  <tr key={g.id} style={{ borderBottom: "1px solid #EAF5F5", background: i % 2 === 0 ? "#fff" : "#F8FCFC" }}>
+                  <tr key={g.org + g.year + i} style={{ borderBottom: "1px solid #EAF5F5", background: i % 2 === 0 ? "#fff" : "#F8FCFC" }}>
                     <td style={{ padding: "11px 16px", color: "#5A8080", fontWeight: 500 }}>{g.year}</td>
                     <td style={{ padding: "11px 16px", fontWeight: 500 }}>{g.org}</td>
                     <td style={{ padding: "11px 16px" }}>
@@ -767,7 +839,7 @@ function GrantsView({ narrow }) {
         <div style={{ display: "grid", gridTemplateColumns: !narrow && orgFilter !== "All Organizations" ? "1fr 1fr" : "1fr", gap: 20 }}>
           <Card style={{ padding: 24 }}>
             <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 600, fontSize: 18, marginBottom: 4 }}>Total Giving by Year</div>
-            <div style={{ fontSize: 12, color: "#5A8080", marginBottom: 20 }}>2001 through {CURRENT_CYCLE_YEAR}</div>
+            <div style={{ fontSize: 12, color: "#5A8080", marginBottom: 20 }}>2001 through {currentCycleYear(grants)}</div>
             <ResponsiveContainer width="100%" height={280}>
               <BarChart data={yoyData} margin={{ bottom: 10 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#EAF5F5" />
@@ -840,20 +912,22 @@ function GrantsView({ narrow }) {
 // =============================================================================
 
 function ContributionsView({ narrow }) {
+  const { donations } = useData();
+  const totalReceived = sumAmount(donations);
   const donByYear = useMemo(() => {
     const byYear = {};
-    DONATIONS_RECEIVED.forEach(d => { byYear[d.year] = (byYear[d.year] || 0) + d.amount; });
+    donations.forEach(d => { byYear[d.year] = (byYear[d.year] || 0) + d.amount; });
     return Object.entries(byYear).sort((a,b) => a[0]-b[0]).map(([yr, amt]) => ({ year: yr, amount: amt }));
-  }, []);
-  const largest = DONATIONS_RECEIVED.slice().sort((a, b) => b.amount - a.amount)[0];
-  const years = new Set(DONATIONS_RECEIVED.map(d => d.year)).size;
+  }, [donations]);
+  const largest = donations.slice().sort((a, b) => b.amount - a.amount)[0] || { amount: 0, year: "", donor: "" };
+  const years = new Set(donations.map(d => d.year)).size;
 
   return (
     <div style={{ maxWidth: 1140, margin: "0 auto", padding: narrow ? "28px 16px" : "36px 40px" }}>
       <SectionTitle title="Contributions" sub="Gifts into the Kendacar fund since 2000" />
 
       <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "repeat(3, 1fr)", gap: 16, marginBottom: 28 }}>
-        <StatCard label="Total Contributed" value={fmt(TOTAL_RECEIVED)} sub="all donors, since 2000" accent={TEAL} />
+        <StatCard label="Total Contributed" value={fmt(totalReceived)} sub="all donors, since 2000" accent={TEAL} />
         <StatCard label="Largest Year" value={fmt(largest.amount)} sub={largest.year + " · " + largest.donor} accent="#C8A020" />
         <StatCard label="Years With Gifts" value={years} sub="distinct giving years" accent="#3A6B9C" />
       </div>
@@ -861,7 +935,7 @@ function ContributionsView({ narrow }) {
       <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "1fr 1fr", gap: 20 }}>
         <Card style={{ padding: 24 }}>
           <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 600, fontSize: 18, marginBottom: 4 }}>Contributions by Year</div>
-          <div style={{ fontSize: 12, color: "#5A8080", marginBottom: 20 }}>Total contributed: <strong style={{ color: TEAL }}>{fmt(TOTAL_RECEIVED)}</strong></div>
+          <div style={{ fontSize: 12, color: "#5A8080", marginBottom: 20 }}>Total contributed: <strong style={{ color: TEAL }}>{fmt(totalReceived)}</strong></div>
           <ResponsiveContainer width="100%" height={240}>
             <AreaChart data={donByYear}>
               <defs>
@@ -892,8 +966,8 @@ function ContributionsView({ narrow }) {
                 </tr>
               </thead>
               <tbody>
-                {DONATIONS_RECEIVED.slice().sort((a,b) => b.year - a.year).map((d, i) => (
-                  <tr key={d.id} style={{ borderBottom: "1px solid #EAF5F5", background: i % 2 === 0 ? "#fff" : "#F8FCFC" }}>
+                {donations.slice().sort((a,b) => b.year - a.year).map((d, i) => (
+                  <tr key={d.donor + d.year + i} style={{ borderBottom: "1px solid #EAF5F5", background: i % 2 === 0 ? "#fff" : "#F8FCFC" }}>
                     <td style={{ padding: "10px 16px", color: "#5A8080" }}>{d.year}</td>
                     <td style={{ padding: "10px 16px", fontWeight: 500 }}>{d.donor}</td>
                     <td style={{ padding: "10px 16px", fontWeight: 700, color: TEAL }}>{fmt(d.amount)}</td>
@@ -912,9 +986,9 @@ function ContributionsView({ narrow }) {
 //  GRANTEES DIRECTORY + DETAIL
 // =============================================================================
 
-function buildGranteeIndex() {
+function buildGranteeIndex(grants) {
   const map = {};
-  GRANTS.forEach(g => {
+  grants.forEach(g => {
     const key = normalizeOrg(g.org);
     if (!map[key]) map[key] = { org: key, total: 0, count: 0, years: new Set(), category: g.category, grants: [] };
     map[key].total += g.amount;
@@ -929,14 +1003,15 @@ function buildGranteeIndex() {
     yearCount: o.years.size,
   })).sort((a, b) => b.total - a.total);
 }
-const GRANTEE_INDEX = buildGranteeIndex();
 
 function GranteesDirectory({ goGrantee, narrow }) {
+  const { grants } = useData();
+  const index = useMemo(() => buildGranteeIndex(grants), [grants]);
   const [q, setQ] = useState("");
-  const list = GRANTEE_INDEX.filter(o => o.org.toLowerCase().includes(q.toLowerCase()));
+  const list = index.filter(o => o.org.toLowerCase().includes(q.toLowerCase()));
   return (
     <div style={{ maxWidth: 1140, margin: "0 auto", padding: narrow ? "28px 16px" : "36px 40px" }}>
-      <SectionTitle title="Grantees" sub={GRANTEE_INDEX.length + " organizations, ranked by total support received"} />
+      <SectionTitle title="Grantees" sub={index.length + " organizations, ranked by total support received"} />
       <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search organizations..." style={{
         width: "100%", maxWidth: 380, border: "1px solid #C0DEDE", borderRadius: 8, padding: "10px 14px",
         fontSize: 14, fontFamily: "'DM Sans', sans-serif", color: "#111D1D", background: "#F5FBFB", marginBottom: 22,
@@ -969,8 +1044,10 @@ function GranteesDirectory({ goGrantee, narrow }) {
 }
 
 function GranteeDetail({ org, setView, goGrantee, narrow }) {
-  const rec = GRANTEE_INDEX.find(o => o.org === org);
-  const note = GRANTEE_NOTES[org];
+  const { grants, granteeNotes } = useData();
+  const index = useMemo(() => buildGranteeIndex(grants), [grants]);
+  const rec = index.find(o => o.org === org);
+  const note = granteeNotes[org];
   if (!rec) {
     return (
       <div style={{ maxWidth: 1140, margin: "0 auto", padding: "36px 40px" }}>
@@ -981,7 +1058,7 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
   }
   const c = CAT_COLORS[rec.category] || "#999";
   const history = rec.grants.slice().sort((a, b) => a.year - b.year).map(g => ({ year: String(g.year), amount: g.amount }));
-  const rank = GRANTEE_INDEX.findIndex(o => o.org === org) + 1;
+  const rank = index.findIndex(o => o.org === org) + 1;
 
   return (
     <div style={{ maxWidth: 1140, margin: "0 auto", padding: narrow ? "24px 16px" : "32px 40px" }}>
@@ -1050,7 +1127,7 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
               </thead>
               <tbody>
                 {rec.grants.slice().sort((a, b) => b.year - a.year).map((g, i) => (
-                  <tr key={g.id} style={{ borderBottom: "1px solid #EAF5F5", background: i % 2 === 0 ? "#fff" : "#F8FCFC" }}>
+                  <tr key={g.year + "-" + i} style={{ borderBottom: "1px solid #EAF5F5", background: i % 2 === 0 ? "#fff" : "#F8FCFC" }}>
                     <td style={{ padding: "10px 16px", color: "#5A8080" }}>{g.year}</td>
                     <td style={{ padding: "10px 16px", fontWeight: 700, color: TEAL }}>{fmt(g.amount)}</td>
                   </tr>
@@ -1071,26 +1148,40 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
 export default function App() {
   const [view, setView] = useState("pulse");
   const [selectedOrg, setSelectedOrg] = useState(null);
+  const [data, setData] = useState(FALLBACK_DATA);  // instant render from baked-in copy
+  const [source, setSource] = useState("fallback"); // "fallback" | "live"
   const width = useWindowWidth();
   const narrow = width < 720;
+
+  // Pull live data from Supabase once on load. If it fails, the fallback stays.
+  useEffect(() => {
+    let cancelled = false;
+    fetchLiveData()
+      .then(live => { if (!cancelled && live && live.grants.length) { setData(live); setSource("live"); } })
+      .catch(() => { /* keep fallback */ });
+    return () => { cancelled = true; };
+  }, []);
 
   function nav(v) { setView(v); setSelectedOrg(null); window.scrollTo({ top: 0 }); }
   function goGrantee(org) { setSelectedOrg(org); setView("grantee-detail"); window.scrollTo({ top: 0 }); }
 
   return (
-    <div style={{ minHeight: "100vh", background: "#F0F8F8", fontFamily: "'DM Sans', sans-serif", color: "#111D1D" }}>
-      <NavBar view={view} setView={nav} narrow={narrow} />
+    <DataContext.Provider value={data}>
+      <div style={{ minHeight: "100vh", background: "#F0F8F8", fontFamily: "'DM Sans', sans-serif", color: "#111D1D" }}>
+        <NavBar view={view} setView={nav} narrow={narrow} />
 
-      {view === "pulse"          && <PulseLanding setView={nav} goGrantee={goGrantee} narrow={narrow} />}
-      {view === "investments"    && <InvestmentsView narrow={narrow} />}
-      {view === "grants"         && <GrantsView narrow={narrow} />}
-      {view === "contributions"  && <ContributionsView narrow={narrow} />}
-      {view === "grantees"       && <GranteesDirectory goGrantee={goGrantee} narrow={narrow} />}
-      {view === "grantee-detail" && <GranteeDetail org={selectedOrg} setView={nav} goGrantee={goGrantee} narrow={narrow} />}
+        {view === "pulse"          && <PulseLanding setView={nav} goGrantee={goGrantee} narrow={narrow} />}
+        {view === "investments"    && <InvestmentsView narrow={narrow} />}
+        {view === "grants"         && <GrantsView narrow={narrow} />}
+        {view === "contributions"  && <ContributionsView narrow={narrow} />}
+        {view === "grantees"       && <GranteesDirectory goGrantee={goGrantee} narrow={narrow} />}
+        {view === "grantee-detail" && <GranteeDetail org={selectedOrg} setView={nav} goGrantee={goGrantee} narrow={narrow} />}
 
-      <div style={{ padding: "32px 20px", textAlign: "center", fontSize: 11, color: "#7A9898", fontFamily: "'Cormorant Garamond', serif", letterSpacing: "0.08em" }}>
-        KENDACAR FOUNDATION &middot; CONFIDENTIAL &middot; FOR FAMILY USE ONLY
+        <div style={{ padding: "32px 20px", textAlign: "center", fontSize: 11, color: "#7A9898", fontFamily: "'Cormorant Garamond', serif", letterSpacing: "0.08em" }}>
+          KENDACAR FOUNDATION &middot; CONFIDENTIAL &middot; FOR FAMILY USE ONLY
+          {source === "live" && <span style={{ color: "#B7CFCF" }}> &middot; live data</span>}
+        </div>
       </div>
-    </div>
+    </DataContext.Provider>
   );
 }
