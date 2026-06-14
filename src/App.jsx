@@ -5,30 +5,114 @@ import {
 } from "recharts";
 
 // =============================================================================
-//  SUPABASE — live data source
-//  The dashboard reads from these tables on load. Edit rows in the Supabase
-//  table editor and the changes appear here on the next refresh — no rebuild,
-//  no git push. If Supabase is ever unreachable, the hard-coded FALLBACK data
-//  below keeps the site working.
+//  SUPABASE — live data source + sign-in + editing
+//  The dashboard reads these tables on load. When an approved person signs in
+//  (magic link to their email), grant/donation/investment entries become
+//  editable right on the page and changes write straight back here — no rebuild,
+//  no git push. If Supabase is unreachable, the FALLBACK data keeps the site up.
 // =============================================================================
 
 const SUPABASE_URL = "https://kdmtjvbgeqcjipdnfwty.supabase.co";
 const SUPABASE_KEY = "sb_publishable_tWKd0z8dbr2cAfExI11pPw_7ACCfjqa";
+const REST = SUPABASE_URL + "/rest/v1/";
+const AUTH = SUPABASE_URL + "/auth/v1/";
+const SESSION_KEY = "kendacar_session";
 
+// ---- read (uses the public key) ----
 async function sb(path) {
-  const res = await fetch(SUPABASE_URL + "/rest/v1/" + path, {
+  const res = await fetch(REST + path, {
     headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + SUPABASE_KEY },
   });
   if (!res.ok) throw new Error("Supabase " + res.status);
   return res.json();
 }
 
+// ---- session storage ----
+function loadSession() {
+  try { return JSON.parse(localStorage.getItem(SESSION_KEY)); } catch { return null; }
+}
+function saveSession(s) {
+  if (s) localStorage.setItem(SESSION_KEY, JSON.stringify(s));
+  else localStorage.removeItem(SESSION_KEY);
+}
+function emailFromToken(tok) {
+  try { return JSON.parse(atob(tok.split(".")[1])).email || ""; } catch { return ""; }
+}
+
+// Parse the #access_token=... fragment Supabase appends after a magic-link click.
+function sessionFromHash() {
+  if (!window.location.hash) return null;
+  const p = new URLSearchParams(window.location.hash.slice(1));
+  const access_token = p.get("access_token");
+  const refresh_token = p.get("refresh_token");
+  if (!access_token) return null;
+  // strip the tokens from the URL so they aren't left in the address bar
+  history.replaceState(null, "", window.location.pathname + window.location.search);
+  return {
+    access_token, refresh_token,
+    expires_at: Date.now() + (Number(p.get("expires_in") || 3600) * 1000),
+    email: emailFromToken(access_token),
+  };
+}
+
+// Send a one-time sign-in link to an email.
+async function sendMagicLink(email) {
+  const res = await fetch(AUTH + "otp", {
+    method: "POST",
+    headers: { apikey: SUPABASE_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({ email, create_user: true, options: { email_redirect_to: window.location.origin + window.location.pathname } }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).msg || "Could not send link (" + res.status + ")");
+  return true;
+}
+
+// Exchange a refresh token for a fresh access token.
+async function refreshSession(session) {
+  if (!session?.refresh_token) return null;
+  const res = await fetch(AUTH + "token?grant_type=refresh_token", {
+    method: "POST",
+    headers: { apikey: SUPABASE_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: session.refresh_token }),
+  });
+  if (!res.ok) return null;
+  const j = await res.json();
+  return { access_token: j.access_token, refresh_token: j.refresh_token,
+    expires_at: Date.now() + (Number(j.expires_in || 3600) * 1000), email: emailFromToken(j.access_token) };
+}
+
+// A write request authenticated as the signed-in user. Refreshes once on 401.
+async function authedWrite(session, setSession, method, path, body) {
+  let s = session;
+  if (s && s.expires_at && s.expires_at < Date.now() + 60000) {
+    const r = await refreshSession(s); if (r) { s = r; setSession(r); saveSession(r); }
+  }
+  const doReq = tok => fetch(REST + path, {
+    method,
+    headers: {
+      apikey: SUPABASE_KEY, Authorization: "Bearer " + tok,
+      "Content-Type": "application/json", Prefer: "return=minimal",
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let res = await doReq(s.access_token);
+  if (res.status === 401) {
+    const r = await refreshSession(s);
+    if (r) { setSession(r); saveSession(r); res = await doReq(r.access_token); }
+  }
+  if (!res.ok) throw new Error("Save failed (" + res.status + "). " + (await res.text().catch(() => "")));
+  return true;
+}
+
+// ---- auth context ----
+const AuthContext = createContext(null);
+const useAuth = () => useContext(AuthContext);
+
 // Pull every display table in parallel and shape it like the fallback data.
 async function fetchLiveData() {
   const [grants, donations, assets, settings, notes] = await Promise.all([
-    sb("grants?select=year,org,amount,category"),
-    sb("donations?select=year,donor,amount"),
-    sb("investment_assets?select=name,value,sort_order&order=sort_order"),
+    sb("grants?select=id,year,org,amount,category&order=year.desc,amount.desc"),
+    sb("donations?select=id,year,donor,amount&order=year.desc"),
+    sb("investment_assets?select=id,name,value,sort_order&order=sort_order"),
     sb("settings?select=key,value"),
     sb("grantee_notes?select=org,contact,website,note"),
   ]);
@@ -37,15 +121,15 @@ async function fetchLiveData() {
   notes.forEach(n => { noteMap[n.org] = { contact: n.contact, website: n.website, note: n.note }; });
   return {
     grants: grants.map(g => ({
-      year: Number(g.year), org: g.org, amount: Number(g.amount),
+      id: g.id, year: Number(g.year), org: g.org, amount: Number(g.amount),
       category: g.category || ORG_CATEGORIES[g.org] || "Community & Social Services",
     })),
-    donations: donations.map(d => ({ year: Number(d.year), donor: d.donor, amount: Number(d.amount) })),
+    donations: donations.map(d => ({ id: d.id, year: Number(d.year), donor: d.donor, amount: Number(d.amount) })),
     investments: {
       asOf: setMap.as_of || "",
       source: setMap.investment_source || "",
       dividendsInterest: Number(setMap.dividends_interest || 0),
-      composition: assets.map(a => ({ name: a.name, value: Number(a.value) })),
+      composition: assets.map(a => ({ id: a.id, name: a.name, value: Number(a.value) })),
     },
     granteeNotes: noteMap,
   };
@@ -515,6 +599,187 @@ function PrimaryButton({ href, children, disabled }) {
 }
 
 // =============================================================================
+//  EDITING UI  (only rendered when an approved person is signed in)
+// =============================================================================
+
+const CATEGORY_LIST = Object.keys(CAT_COLORS);
+
+const inputStyle = {
+  border: "1px solid #C0DEDE", borderRadius: 6, padding: "6px 8px", fontSize: 13,
+  fontFamily: "'DM Sans', sans-serif", color: "#111D1D", background: "#fff", width: "100%",
+};
+
+function EdInput({ value, onChange, type = "text", placeholder }) {
+  return <input type={type} value={value} placeholder={placeholder}
+    onChange={e => onChange(e.target.value)} style={inputStyle} />;
+}
+function EdSelect({ value, onChange, options }) {
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)} style={{ ...inputStyle, cursor: "pointer" }}>
+      {options.map(o => <option key={o} value={o}>{o}</option>)}
+    </select>
+  );
+}
+
+function MiniButton({ onClick, children, kind, disabled }) {
+  const colors = {
+    save:   { bg: TEAL, fg: "#fff", bd: TEAL },
+    cancel: { bg: "#fff", fg: "#5A8080", bd: "#C0DEDE" },
+    delete: { bg: "#fff", fg: "#B5451B", bd: "#E3C3B6" },
+    edit:   { bg: "#F5FBFB", fg: TEAL, bd: "#C8E8E8" },
+  }[kind] || { bg: "#fff", fg: TEAL, bd: "#C0DEDE" };
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      background: colors.bg, color: colors.fg, border: "1px solid " + colors.bd, borderRadius: 6,
+      padding: "5px 11px", fontSize: 12, fontWeight: 600, cursor: disabled ? "default" : "pointer",
+      opacity: disabled ? 0.5 : 1, fontFamily: "'DM Sans', sans-serif",
+    }}>{children}</button>
+  );
+}
+
+// Inline editor for a single grant row (id null => adding a new grant).
+function GrantEditRow({ row, onDone, narrow }) {
+  const { session, setSession } = useAuth();
+  const { refresh } = useData();
+  const [year, setYear] = useState(row?.year ?? new Date().getFullYear());
+  const [org, setOrg] = useState(row?.org ?? "");
+  const [amount, setAmount] = useState(row?.amount ?? "");
+  const [category, setCategory] = useState(row?.category ?? CATEGORY_LIST[0]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function save() {
+    if (!org.trim() || amount === "" || isNaN(Number(amount)) || isNaN(Number(year))) {
+      setErr("Year, organization and a numeric amount are required."); return;
+    }
+    setBusy(true); setErr("");
+    const payload = { year: Number(year), org: org.trim(), amount: Number(amount), category };
+    try {
+      if (row?.id != null) await authedWrite(session, setSession, "PATCH", "grants?id=eq." + row.id, payload);
+      else await authedWrite(session, setSession, "POST", "grants", payload);
+      await refresh(); onDone();
+    } catch (e) { setErr(e.message); setBusy(false); }
+  }
+  async function remove() {
+    if (!window.confirm("Delete this grant? This can't be undone.")) return;
+    setBusy(true); setErr("");
+    try { await authedWrite(session, setSession, "DELETE", "grants?id=eq." + row.id); await refresh(); onDone(); }
+    catch (e) { setErr(e.message); setBusy(false); }
+  }
+
+  return (
+    <tr style={{ background: "#F0FAFA", borderBottom: "1px solid #C8E8E8" }}>
+      <td style={{ padding: "8px 12px" }}><EdInput type="number" value={year} onChange={setYear} /></td>
+      <td style={{ padding: "8px 12px" }}><EdInput value={org} onChange={setOrg} placeholder="Organization" /></td>
+      <td style={{ padding: "8px 12px" }}><EdSelect value={category} onChange={setCategory} options={CATEGORY_LIST} /></td>
+      <td style={{ padding: "8px 12px" }}><EdInput type="number" value={amount} onChange={setAmount} placeholder="Amount" /></td>
+      <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <MiniButton kind="save" onClick={save} disabled={busy}>{busy ? "…" : "Save"}</MiniButton>
+          <MiniButton kind="cancel" onClick={onDone} disabled={busy}>Cancel</MiniButton>
+          {row?.id != null && <MiniButton kind="delete" onClick={remove} disabled={busy}>Delete</MiniButton>}
+        </div>
+        {err && <div style={{ color: "#B5451B", fontSize: 11, marginTop: 4, maxWidth: 240 }}>{err}</div>}
+      </td>
+    </tr>
+  );
+}
+
+// Inline editor for a single donation row.
+function DonationEditRow({ row, onDone }) {
+  const { session, setSession } = useAuth();
+  const { refresh } = useData();
+  const [year, setYear] = useState(row?.year ?? new Date().getFullYear());
+  const [donor, setDonor] = useState(row?.donor ?? "");
+  const [amount, setAmount] = useState(row?.amount ?? "");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function save() {
+    if (!donor.trim() || amount === "" || isNaN(Number(amount)) || isNaN(Number(year))) {
+      setErr("Year, donor and a numeric amount are required."); return;
+    }
+    setBusy(true); setErr("");
+    const payload = { year: Number(year), donor: donor.trim(), amount: Number(amount) };
+    try {
+      if (row?.id != null) await authedWrite(session, setSession, "PATCH", "donations?id=eq." + row.id, payload);
+      else await authedWrite(session, setSession, "POST", "donations", payload);
+      await refresh(); onDone();
+    } catch (e) { setErr(e.message); setBusy(false); }
+  }
+  async function remove() {
+    if (!window.confirm("Delete this contribution?")) return;
+    setBusy(true); setErr("");
+    try { await authedWrite(session, setSession, "DELETE", "donations?id=eq." + row.id); await refresh(); onDone(); }
+    catch (e) { setErr(e.message); setBusy(false); }
+  }
+
+  return (
+    <tr style={{ background: "#F0FAFA", borderBottom: "1px solid #C8E8E8" }}>
+      <td style={{ padding: "8px 12px" }}><EdInput type="number" value={year} onChange={setYear} /></td>
+      <td style={{ padding: "8px 12px" }}><EdInput value={donor} onChange={setDonor} placeholder="Donor" /></td>
+      <td style={{ padding: "8px 12px" }}><EdInput type="number" value={amount} onChange={setAmount} placeholder="Amount" /></td>
+      <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <MiniButton kind="save" onClick={save} disabled={busy}>{busy ? "…" : "Save"}</MiniButton>
+          <MiniButton kind="cancel" onClick={onDone} disabled={busy}>Cancel</MiniButton>
+          {row?.id != null && <MiniButton kind="delete" onClick={remove} disabled={busy}>Delete</MiniButton>}
+        </div>
+        {err && <div style={{ color: "#B5451B", fontSize: 11, marginTop: 4 }}>{err}</div>}
+      </td>
+    </tr>
+  );
+}
+
+// Footer sign-in / sign-out control.
+function SignInControl() {
+  const { signedIn, email, signOut, startSignIn } = useAuth();
+  const [open, setOpen] = useState(false);
+  const [addr, setAddr] = useState("");
+  const [state, setState] = useState("idle"); // idle | sending | sent | error
+  const [msg, setMsg] = useState("");
+
+  async function submit() {
+    if (!addr.trim()) return;
+    setState("sending"); setMsg("");
+    try { await startSignIn(addr.trim()); setState("sent"); }
+    catch (e) { setState("error"); setMsg(e.message); }
+  }
+
+  if (signedIn) {
+    return (
+      <div style={{ fontSize: 12, color: "#7A9898", marginTop: 10 }}>
+        Signed in as {email} ·{" "}
+        <button onClick={signOut} style={{ background: "none", border: "none", color: TEAL, cursor: "pointer", fontSize: 12, fontWeight: 600, textDecoration: "underline" }}>Sign out</button>
+      </div>
+    );
+  }
+  if (!open) {
+    return (
+      <div style={{ marginTop: 10 }}>
+        <button onClick={() => setOpen(true)} style={{ background: "none", border: "none", color: "#9DB6B6", cursor: "pointer", fontSize: 11, letterSpacing: "0.06em" }}>Sign in to edit</button>
+      </div>
+    );
+  }
+  return (
+    <div style={{ marginTop: 12, display: "inline-flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+      {state === "sent" ? (
+        <div style={{ fontSize: 13, color: TEAL }}>Check your email for a sign-in link, then come back to this page.</div>
+      ) : (
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
+          <input value={addr} onChange={e => setAddr(e.target.value)} placeholder="your email"
+            onKeyDown={e => e.key === "Enter" && submit()}
+            style={{ ...inputStyle, width: 220, fontSize: 13 }} />
+          <MiniButton kind="save" onClick={submit} disabled={state === "sending"}>{state === "sending" ? "Sending…" : "Send link"}</MiniButton>
+          <MiniButton kind="cancel" onClick={() => setOpen(false)}>Cancel</MiniButton>
+        </div>
+      )}
+      {state === "error" && <div style={{ color: "#B5451B", fontSize: 12 }}>{msg}</div>}
+    </div>
+  );
+}
+
+// =============================================================================
 //  NAV BAR
 // =============================================================================
 
@@ -665,14 +930,76 @@ function PulseLanding({ setView, goGrantee, narrow }) {
 //  INVESTMENTS VIEW
 // =============================================================================
 
+function InvestmentEditor({ investments, onDone }) {
+  const { session, setSession } = useAuth();
+  const { refresh } = useData();
+  const [assets, setAssets] = useState(investments.composition.map(a => ({ ...a })));
+  const [asOf, setAsOf] = useState(investments.asOf);
+  const [source, setSource] = useState(investments.source);
+  const [dividends, setDividends] = useState(investments.dividendsInterest);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function save() {
+    setBusy(true); setErr("");
+    try {
+      for (const a of assets) {
+        if (a.id != null) await authedWrite(session, setSession, "PATCH", "investment_assets?id=eq." + a.id, { name: a.name, value: Number(a.value) });
+      }
+      await authedWrite(session, setSession, "PATCH", "settings?key=eq.as_of", { value: asOf });
+      await authedWrite(session, setSession, "PATCH", "settings?key=eq.investment_source", { value: source });
+      await authedWrite(session, setSession, "PATCH", "settings?key=eq.dividends_interest", { value: String(dividends) });
+      await refresh(); onDone();
+    } catch (e) { setErr(e.message); setBusy(false); }
+  }
+
+  return (
+    <Card style={{ padding: 22, marginBottom: 24, background: "#F5FBFB", border: "1px solid #C8E8E8" }}>
+      <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 700, fontSize: 18, marginBottom: 14 }}>Edit investment figures</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
+        {assets.map((a, i) => (
+          <div key={a.id ?? i}>
+            <label style={{ fontSize: 11, color: "#5A8080", display: "block", marginBottom: 3 }}>{a.name}</label>
+            <EdInput type="number" value={a.value} onChange={v => setAssets(assets.map((x, j) => j === i ? { ...x, value: v } : x))} />
+          </div>
+        ))}
+        <div>
+          <label style={{ fontSize: 11, color: "#5A8080", display: "block", marginBottom: 3 }}>Dividends &amp; Interest</label>
+          <EdInput type="number" value={dividends} onChange={setDividends} />
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: "#5A8080", display: "block", marginBottom: 3 }}>As of</label>
+          <EdInput value={asOf} onChange={setAsOf} />
+        </div>
+        <div>
+          <label style={{ fontSize: 11, color: "#5A8080", display: "block", marginBottom: 3 }}>Source</label>
+          <EdInput value={source} onChange={setSource} />
+        </div>
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <MiniButton kind="save" onClick={save} disabled={busy}>{busy ? "Saving…" : "Save figures"}</MiniButton>
+        <MiniButton kind="cancel" onClick={onDone} disabled={busy}>Cancel</MiniButton>
+      </div>
+      {err && <div style={{ color: "#B5451B", fontSize: 12, marginTop: 8 }}>{err}</div>}
+    </Card>
+  );
+}
+
 function InvestmentsView({ narrow }) {
   const { investments } = useData();
+  const { signedIn } = useAuth();
+  const [editing, setEditing] = useState(false);
   const data = investments.composition;
   const corpus = corpusTotal(investments);
   const colors = ["#3A6B9C", TEAL, "#C8A020", "#7B5EA7", "#2E7D5E"];
   return (
     <div style={{ maxWidth: 1140, margin: "0 auto", padding: narrow ? "28px 16px" : "36px 40px" }}>
-      <SectionTitle title="Investments" sub={"Corpus composition · " + investments.source + " · as of " + investments.asOf} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
+        <SectionTitle title="Investments" sub={"Corpus composition · " + investments.source + " · as of " + investments.asOf} />
+        {signedIn && !editing && <MiniButton kind="edit" onClick={() => setEditing(true)}>Edit figures</MiniButton>}
+      </div>
+
+      {signedIn && editing && <InvestmentEditor investments={investments} onDone={() => setEditing(false)} />}
 
       <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "repeat(3, 1fr)", gap: 16, marginBottom: 28 }}>
         <StatCard label="Total Corpus" value={fmtK(corpus)} sub={"as of " + investments.asOf} accent="#3A6B9C" />
@@ -712,7 +1039,7 @@ function InvestmentsView({ narrow }) {
             })}
           </div>
           <div style={{ marginTop: 24, paddingTop: 18, borderTop: "1px solid #EAF5F5", fontSize: 12, color: "#7A9898", lineHeight: 1.5 }}>
-            Figures from the {investments.source}, reflecting balances as of {investments.asOf}. Returns net of estimated investment fees. Edit these in the <code style={{ background: "#EAF5F5", padding: "1px 5px", borderRadius: 4 }}>investment_assets</code> and <code style={{ background: "#EAF5F5", padding: "1px 5px", borderRadius: 4 }}>settings</code> tables in Supabase after each annual statement.
+            Figures from the {investments.source}, reflecting balances as of {investments.asOf}. Returns net of estimated investment fees. Sign in and use <em>Edit figures</em> to update these after each annual statement.
           </div>
         </Card>
       </div>
@@ -726,10 +1053,12 @@ function InvestmentsView({ narrow }) {
 
 function GrantsView({ narrow }) {
   const { grants } = useData();
+  const { signedIn } = useAuth();
   const [yearFilter, setYearFilter] = useState("All Years");
   const [orgFilter,  setOrgFilter]  = useState("All Organizations");
   const [catFilter,  setCatFilter]  = useState("All Categories");
   const [tab, setTab] = useState("grants");
+  const [editId, setEditId] = useState(null); // grant id being edited, or "new"
 
   const ALL_YEARS = useMemo(() => yearOptions(grants), [grants]);
   const ALL_ORGS  = useMemo(() => orgOptions(grants),  [grants]);
@@ -808,26 +1137,44 @@ function GrantsView({ narrow }) {
 
       {tab === "grants" && (
         <Card style={{ overflow: "hidden" }}>
+          {signedIn && (
+            <div style={{ padding: "12px 16px", borderBottom: "1px solid #EAF5F5", background: "#F5FBFB", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12, color: "#5A8080" }}>You're signed in — click <strong>Edit</strong> on any grant, or add a new one.</span>
+              <MiniButton kind="edit" onClick={() => setEditId(editId === "new" ? null : "new")}>{editId === "new" ? "Close" : "+ Add grant"}</MiniButton>
+            </div>
+          )}
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 520 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: signedIn ? 640 : 520 }}>
               <thead>
                 <tr style={{ background: "#F0F8F8", borderBottom: "1px solid #C8E8E8" }}>
-                  {["Year", "Organization", "Category", "Amount"].map(h => (
+                  {["Year", "Organization", "Category", "Amount"].concat(signedIn ? ["Edit"] : []).map(h => (
                     <th key={h} style={{ padding: "12px 16px", textAlign: "left", fontFamily: "'Cormorant Garamond', serif", fontWeight: 600, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#5A8080", whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {filtered.length === 0 && <tr><td colSpan={4} style={{ padding: 32, textAlign: "center", color: "#5A8080" }}>No grants match your filters.</td></tr>}
+                {signedIn && editId === "new" && <GrantEditRow row={null} onDone={() => setEditId(null)} narrow={narrow} />}
+                {filtered.length === 0 && <tr><td colSpan={signedIn ? 5 : 4} style={{ padding: 32, textAlign: "center", color: "#5A8080" }}>No grants match your filters.</td></tr>}
                 {filtered.slice().sort((a, b) => b.year - a.year || b.amount - a.amount).map((g, i) => (
-                  <tr key={g.org + g.year + i} style={{ borderBottom: "1px solid #EAF5F5", background: i % 2 === 0 ? "#fff" : "#F8FCFC" }}>
+                  editId === g.id && g.id != null ? (
+                    <GrantEditRow key={"edit" + g.id} row={g} onDone={() => setEditId(null)} narrow={narrow} />
+                  ) : (
+                  <tr key={g.id ?? g.org + g.year + i} style={{ borderBottom: "1px solid #EAF5F5", background: i % 2 === 0 ? "#fff" : "#F8FCFC" }}>
                     <td style={{ padding: "11px 16px", color: "#5A8080", fontWeight: 500 }}>{g.year}</td>
                     <td style={{ padding: "11px 16px", fontWeight: 500 }}>{g.org}</td>
                     <td style={{ padding: "11px 16px" }}>
                       <span style={{ background: (CAT_COLORS[g.category] || "#999") + "18", color: CAT_COLORS[g.category] || "#999", borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" }}>{g.category}</span>
                     </td>
                     <td style={{ padding: "11px 16px", fontWeight: 700, color: TEAL, whiteSpace: "nowrap" }}>{fmt(g.amount)}</td>
+                    {signedIn && (
+                      <td style={{ padding: "11px 16px" }}>
+                        {g.id != null
+                          ? <MiniButton kind="edit" onClick={() => setEditId(g.id)}>Edit</MiniButton>
+                          : <span style={{ fontSize: 11, color: "#B7C7C7" }}>—</span>}
+                      </td>
+                    )}
                   </tr>
+                  )
                 ))}
               </tbody>
             </table>
@@ -913,6 +1260,8 @@ function GrantsView({ narrow }) {
 
 function ContributionsView({ narrow }) {
   const { donations } = useData();
+  const { signedIn } = useAuth();
+  const [editId, setEditId] = useState(null);
   const totalReceived = sumAmount(donations);
   const donByYear = useMemo(() => {
     const byYear = {};
@@ -953,25 +1302,32 @@ function ContributionsView({ narrow }) {
           </ResponsiveContainer>
         </Card>
         <Card style={{ overflow: "hidden" }}>
-          <div style={{ padding: "16px 20px", borderBottom: "1px solid #EAF5F5" }}>
+          <div style={{ padding: "16px 20px", borderBottom: "1px solid #EAF5F5", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
             <div style={{ fontFamily: "'Cormorant Garamond', serif", fontWeight: 600, fontSize: 18 }}>Contribution History</div>
+            {signedIn && <MiniButton kind="edit" onClick={() => setEditId(editId === "new" ? null : "new")}>{editId === "new" ? "Close" : "+ Add"}</MiniButton>}
           </div>
           <div style={{ maxHeight: 340, overflowY: "auto", overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 360 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: signedIn ? 480 : 360 }}>
               <thead>
                 <tr style={{ background: "#F0F8F8" }}>
-                  {["Year", "Donor", "Amount"].map(h => (
+                  {["Year", "Donor", "Amount"].concat(signedIn ? ["Edit"] : []).map(h => (
                     <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontFamily: "'Cormorant Garamond', serif", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#5A8080" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
+                {signedIn && editId === "new" && <DonationEditRow row={null} onDone={() => setEditId(null)} />}
                 {donations.slice().sort((a,b) => b.year - a.year).map((d, i) => (
-                  <tr key={d.donor + d.year + i} style={{ borderBottom: "1px solid #EAF5F5", background: i % 2 === 0 ? "#fff" : "#F8FCFC" }}>
+                  editId === d.id && d.id != null ? (
+                    <DonationEditRow key={"edit" + d.id} row={d} onDone={() => setEditId(null)} />
+                  ) : (
+                  <tr key={d.id ?? d.donor + d.year + i} style={{ borderBottom: "1px solid #EAF5F5", background: i % 2 === 0 ? "#fff" : "#F8FCFC" }}>
                     <td style={{ padding: "10px 16px", color: "#5A8080" }}>{d.year}</td>
                     <td style={{ padding: "10px 16px", fontWeight: 500 }}>{d.donor}</td>
                     <td style={{ padding: "10px 16px", fontWeight: 700, color: TEAL }}>{fmt(d.amount)}</td>
+                    {signedIn && <td style={{ padding: "10px 16px" }}>{d.id != null ? <MiniButton kind="edit" onClick={() => setEditId(d.id)}>Edit</MiniButton> : <span style={{ fontSize: 11, color: "#B7C7C7" }}>—</span>}</td>}
                   </tr>
+                  )
                 ))}
               </tbody>
             </table>
@@ -1150,38 +1506,71 @@ export default function App() {
   const [selectedOrg, setSelectedOrg] = useState(null);
   const [data, setData] = useState(FALLBACK_DATA);  // instant render from baked-in copy
   const [source, setSource] = useState("fallback"); // "fallback" | "live"
+  const [session, setSession] = useState(null);
   const width = useWindowWidth();
   const narrow = width < 720;
 
-  // Pull live data from Supabase once on load. If it fails, the fallback stays.
+  // Reusable loader so edits can refresh the page data after a write.
+  const loadData = async () => {
+    try {
+      const live = await fetchLiveData();
+      if (live && live.grants.length) { setData(live); setSource("live"); }
+      return live;
+    } catch { /* keep fallback */ }
+  };
+
+  // On load: capture a magic-link session from the URL (or restore a saved one),
+  // then pull live data.
   useEffect(() => {
-    let cancelled = false;
-    fetchLiveData()
-      .then(live => { if (!cancelled && live && live.grants.length) { setData(live); setSource("live"); } })
-      .catch(() => { /* keep fallback */ });
-    return () => { cancelled = true; };
+    const fromHash = sessionFromHash();
+    const existing = fromHash || loadSession();
+    if (fromHash) saveSession(fromHash);
+    if (existing) {
+      if (existing.expires_at && existing.expires_at < Date.now()) {
+        refreshSession(existing).then(r => { if (r) { setSession(r); saveSession(r); } else { saveSession(null); } });
+      } else setSession(existing);
+    }
+    loadData();
   }, []);
 
   function nav(v) { setView(v); setSelectedOrg(null); window.scrollTo({ top: 0 }); }
   function goGrantee(org) { setSelectedOrg(org); setView("grantee-detail"); window.scrollTo({ top: 0 }); }
 
+  const auth = {
+    session, setSession,
+    signedIn: !!session,
+    email: session?.email || "",
+    startSignIn: email => sendMagicLink(email),
+    signOut: () => { setSession(null); saveSession(null); },
+  };
+
   return (
-    <DataContext.Provider value={data}>
-      <div style={{ minHeight: "100vh", background: "#F0F8F8", fontFamily: "'DM Sans', sans-serif", color: "#111D1D" }}>
-        <NavBar view={view} setView={nav} narrow={narrow} />
+    <AuthContext.Provider value={auth}>
+      <DataContext.Provider value={{ ...data, refresh: loadData, live: source === "live" }}>
+        <div style={{ minHeight: "100vh", background: "#F0F8F8", fontFamily: "'DM Sans', sans-serif", color: "#111D1D" }}>
+          <NavBar view={view} setView={nav} narrow={narrow} />
 
-        {view === "pulse"          && <PulseLanding setView={nav} goGrantee={goGrantee} narrow={narrow} />}
-        {view === "investments"    && <InvestmentsView narrow={narrow} />}
-        {view === "grants"         && <GrantsView narrow={narrow} />}
-        {view === "contributions"  && <ContributionsView narrow={narrow} />}
-        {view === "grantees"       && <GranteesDirectory goGrantee={goGrantee} narrow={narrow} />}
-        {view === "grantee-detail" && <GranteeDetail org={selectedOrg} setView={nav} goGrantee={goGrantee} narrow={narrow} />}
+          {auth.signedIn && (
+            <div style={{ background: "#0E7A5F", color: "#fff", textAlign: "center", fontSize: 12, padding: "7px 16px", fontFamily: "'DM Sans', sans-serif" }}>
+              Edit mode — signed in as {auth.email}. Open <strong>Grants Made</strong>, <strong>Contributions</strong>, or <strong>Investments</strong> to make changes. ·{" "}
+              <button onClick={auth.signOut} style={{ background: "none", border: "none", color: "#CFEFE5", cursor: "pointer", fontSize: 12, fontWeight: 600, textDecoration: "underline" }}>Sign out</button>
+            </div>
+          )}
 
-        <div style={{ padding: "32px 20px", textAlign: "center", fontSize: 11, color: "#7A9898", fontFamily: "'Cormorant Garamond', serif", letterSpacing: "0.08em" }}>
-          KENDACAR FOUNDATION &middot; CONFIDENTIAL &middot; FOR FAMILY USE ONLY
-          {source === "live" && <span style={{ color: "#B7CFCF" }}> &middot; live data</span>}
+          {view === "pulse"          && <PulseLanding setView={nav} goGrantee={goGrantee} narrow={narrow} />}
+          {view === "investments"    && <InvestmentsView narrow={narrow} />}
+          {view === "grants"         && <GrantsView narrow={narrow} />}
+          {view === "contributions"  && <ContributionsView narrow={narrow} />}
+          {view === "grantees"       && <GranteesDirectory goGrantee={goGrantee} narrow={narrow} />}
+          {view === "grantee-detail" && <GranteeDetail org={selectedOrg} setView={nav} goGrantee={goGrantee} narrow={narrow} />}
+
+          <div style={{ padding: "32px 20px", textAlign: "center", fontSize: 11, color: "#7A9898", fontFamily: "'Cormorant Garamond', serif", letterSpacing: "0.08em" }}>
+            KENDACAR FOUNDATION &middot; CONFIDENTIAL &middot; FOR FAMILY USE ONLY
+            {source === "live" && <span style={{ color: "#B7CFCF" }}> &middot; live data</span>}
+            <SignInControl />
+          </div>
         </div>
-      </div>
-    </DataContext.Provider>
+      </DataContext.Provider>
+    </AuthContext.Provider>
   );
 }
