@@ -1473,9 +1473,90 @@ function GranteesDirectory({ goGrantee, narrow }) {
   const nameOf = o => (granteeNotes[o.org] && granteeNotes[o.org].displayName) || o.org;
   const [q, setQ] = useState("");
   const list = index.filter(o => nameOf(o).toLowerCase().includes(q.toLowerCase()) || o.org.toLowerCase().includes(q.toLowerCase()));
+
+  // Aggregate all giving by focus area for the donut + top-area tile.
+  const { catData, totalAll, top, topSeries } = useMemo(() => {
+    const byCat = {};
+    grants.forEach(g => { const c = g.category || "Other"; byCat[c] = (byCat[c] || 0) + g.amount; });
+    const catData = Object.entries(byCat).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+    const totalAll = catData.reduce((s, c) => s + c.value, 0);
+    const top = catData[0] || null;
+    let topSeries = [];
+    if (top) {
+      const byYear = {};
+      grants.filter(g => (g.category || "Other") === top.name).forEach(g => { byYear[g.year] = (byYear[g.year] || 0) + g.amount; });
+      topSeries = Object.entries(byYear).map(([year, amount]) => ({ year: Number(year), amount })).sort((a, b) => a.year - b.year);
+    }
+    return { catData, totalAll, top, topSeries };
+  }, [grants]);
+  const topCount = top ? grants.filter(g => (g.category || "Other") === top.name).length : 0;
+  const topYears = topSeries.length ? topSeries[0].year + "–" + topSeries[topSeries.length - 1].year : "";
+  const topPct = top && totalAll ? Math.round((top.value / totalAll) * 100) : 0;
+
   return (
     <div style={{ maxWidth: 1140, margin: "0 auto", padding: narrow ? "28px 16px" : "36px 40px" }}>
       <SectionTitle title="Grantees" sub={index.length + " organizations, ranked by total support received"} />
+
+      {top && (
+        <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "minmax(0,1.35fr) minmax(0,1fr)", gap: 16, marginBottom: 26 }}>
+          {/* Donut — areas of giving */}
+          <Card style={{ padding: narrow ? 18 : 24 }}>
+            <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, marginBottom: 4 }}>Areas of Giving</div>
+            <div style={{ fontSize: 12, color: "#7C8C8A", marginBottom: 14 }}>{fmt(totalAll)} across {catData.length} focus areas, all years</div>
+            <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "minmax(0,1fr) minmax(0,1fr)", gap: 8, alignItems: "center" }}>
+              <div style={{ height: 230 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie data={catData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={55} outerRadius={92} paddingAngle={2} isAnimationActive={false}>
+                      {catData.map(entry => <Cell key={entry.name} fill={CAT_COLORS[entry.name] || "#999"} />)}
+                    </Pie>
+                    <Tooltip formatter={v => fmt(v)} contentStyle={{ fontFamily: FONT_BODY, fontSize: 13 }} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                {catData.map(c => {
+                  const pct = totalAll ? Math.round((c.value / totalAll) * 100) : 0;
+                  return (
+                    <div key={c.name} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+                      <span style={{ width: 10, height: 10, borderRadius: 3, background: CAT_COLORS[c.name] || "#999", flexShrink: 0 }} />
+                      <span style={{ color: INK, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</span>
+                      <span style={{ color: "#7C8C8A", whiteSpace: "nowrap" }}>{fmtK(c.value)} <span style={{ fontSize: 11 }}>({pct}%)</span></span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </Card>
+
+          {/* Top area over time tile */}
+          <Card style={{ padding: narrow ? 18 : 24, display: "flex", flexDirection: "column", background: "linear-gradient(160deg,#FFFDF9,#FBF4EC)" }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "#A8B8B8" }}>Top area of giving</div>
+            <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 700, fontSize: narrow ? 22 : 25, color: CAT_COLORS[top.name] || TEAL, lineHeight: 1.15, marginTop: 6 }}>{top.name}</div>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+              <span style={{ fontFamily: FONT_DISPLAY, fontWeight: 700, fontSize: 30, color: TEAL }}>{fmtK(top.value)}</span>
+              <span style={{ fontSize: 13, color: "#7C8C8A" }}>{topPct}% of all giving</span>
+            </div>
+            <div style={{ fontSize: 12.5, color: "#7C8C8A", marginTop: 4 }}>{topCount} grant{topCount > 1 ? "s" : ""} &middot; {topYears}</div>
+            <div style={{ flex: 1, minHeight: 90, marginTop: 14 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={topSeries} margin={{ top: 4, right: 4, bottom: 0, left: 4 }}>
+                  <defs>
+                    <linearGradient id="topAreaFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={CAT_COLORS[top.name] || TEAL} stopOpacity={0.35} />
+                      <stop offset="100%" stopColor={CAT_COLORS[top.name] || TEAL} stopOpacity={0.03} />
+                    </linearGradient>
+                  </defs>
+                  <XAxis dataKey="year" tick={{ fontFamily: FONT_BODY, fontSize: 10, fill: "#A8B8B8" }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+                  <Tooltip formatter={v => fmt(v)} labelFormatter={l => "Year " + l} contentStyle={{ fontFamily: FONT_BODY, fontSize: 12 }} />
+                  <Area type="monotone" dataKey="amount" stroke={CAT_COLORS[top.name] || TEAL} strokeWidth={2.5} fill="url(#topAreaFill)" isAnimationActive={false} dot={{ r: 2.5, fill: CAT_COLORS[top.name] || TEAL }} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </Card>
+        </div>
+      )}
+
       <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search organizations..." style={{
         width: "100%", maxWidth: 380, border: "1px solid #E2D7C9", borderRadius: 8, padding: "10px 14px",
         fontSize: 14, fontFamily: "'Nunito Sans', sans-serif", color: "#1F3A38", background: "#FBF4EC", marginBottom: 22,
