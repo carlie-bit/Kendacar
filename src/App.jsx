@@ -1964,6 +1964,18 @@ function MarkSentRow({ req, onDone }) {
       // 2) mark the recommendation as sent
       await authedWrite(session, setSession, "PATCH", "grant_requests?id=eq." + req.id,
         { status: "sent", check_date: date || null, check_number: checkNo.trim() || null, processed_at: new Date().toISOString() });
+      // 3) open a personal confirmation email in your mail app (if we have their address)
+      if (req.requester_email) {
+        const subject = "Your Kendacar grant to " + req.org + " is on its way";
+        const body =
+          "Hi " + (req.requested_by || "there") + ",\n\n" +
+          "Great news — the grant you recommended for " + req.org + " (" + fmt(Number(amount)) + ") has been approved and sent.\n\n" +
+          "Thank you for putting it forward.\n\n" +
+          "— Kendacar Foundation";
+        const a = document.createElement("a");
+        a.href = "mailto:" + encodeURIComponent(req.requester_email) + "?subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
+        a.click();
+      }
       await refresh(); onDone();
     } catch (e) { setErr(e.message); setBusy(false); }
   }
@@ -1976,23 +1988,26 @@ function MarkSentRow({ req, onDone }) {
         <div><label style={{ fontSize: 11, color: "#7C8C8A", fontWeight: 700, display: "block", marginBottom: 3 }}>Check # (optional)</label><EdInput value={checkNo} onChange={setCheckNo} /></div>
       </div>
       <div style={{ display: "flex", gap: 8 }}>
-        <MiniButton kind="save" onClick={markSent} disabled={busy}>{busy ? "Posting…" : "Confirm — post grant"}</MiniButton>
+        <MiniButton kind="save" onClick={markSent} disabled={busy}>{busy ? "Posting…" : (req.requester_email ? "Confirm — post grant & draft email" : "Confirm — post grant")}</MiniButton>
         <MiniButton kind="cancel" onClick={onDone} disabled={busy}>Cancel</MiniButton>
       </div>
+      {req.requester_email && <div style={{ fontSize: 11.5, color: "#9B8E80", marginTop: 8 }}>Opens a pre-written note to {req.requester_email} in your mail app to review &amp; send.</div>}
       {err && <div style={{ color: "#B5451B", fontSize: 12, marginTop: 8 }}>{err}</div>}
     </div>
   );
 }
 
-function ProcessingQueue({ narrow, setView }) {
+function ProcessingQueue({ narrow, setView, onChange }) {
   const { session, setSession } = useAuth();
   const [items, setItems] = useState(null);
   const [err, setErr] = useState("");
   const [openId, setOpenId] = useState(null);
 
   async function load() {
-    try { setItems(await authedGet(session, setSession, "grant_requests?status=eq.new&order=created_at.desc&select=id,org,amount,requested_by,requester_email,category,notes,created_at")); }
-    catch (e) { setErr(e.message); }
+    try {
+      setItems(await authedGet(session, setSession, "grant_requests?status=eq.new&order=created_at.desc&select=id,org,amount,requested_by,requester_email,category,notes,created_at"));
+      onChange && onChange();
+    } catch (e) { setErr(e.message); }
   }
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
 
@@ -2056,8 +2071,16 @@ export default function App() {
   const [data, setData] = useState(FALLBACK_DATA);  // instant render from baked-in copy
   const [source, setSource] = useState("fallback"); // "fallback" | "live"
   const [session, setSession] = useState(null);
+  const [pending, setPending] = useState(0);        // count of new submissions
   const width = useWindowWidth();
   const narrow = width < 720;
+
+  const refreshPending = async (sess) => {
+    const s = sess || session;
+    if (!s) { setPending(0); return; }
+    try { const rows = await authedGet(s, setSession, "grant_requests?status=eq.new&select=id"); setPending(rows.length); }
+    catch { /* ignore */ }
+  };
 
   // Reusable loader so edits can refresh the page data after a write.
   const loadData = async () => {
@@ -2085,6 +2108,9 @@ export default function App() {
     loadData();
   }, []);
 
+  // Keep the "new submissions" badge current whenever the signed-in user changes.
+  useEffect(() => { refreshPending(session); /* eslint-disable-next-line */ }, [session]);
+
   function nav(v) {
     setView(v); setSelectedOrg(null);
     const hashView = v === "request-grant" || v === "contribute";
@@ -2110,7 +2136,8 @@ export default function App() {
           {auth.signedIn && (
             <div style={{ background: "#0E7A5F", color: "#fff", textAlign: "center", fontSize: 12, padding: "7px 16px", fontFamily: "'Nunito Sans', sans-serif" }}>
               Edit mode — signed in as {auth.email}. ·{" "}
-              <button onClick={() => setView("queue")} style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 12, fontWeight: 700, textDecoration: "underline" }}>Review submissions</button> ·{" "}
+              <button onClick={() => setView("queue")} style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 12, fontWeight: 700, textDecoration: "underline" }}>Review submissions</button>
+              {pending > 0 && <span style={{ background: CORAL, color: "#fff", borderRadius: 20, padding: "1px 8px", fontSize: 11, fontWeight: 800, marginLeft: 6 }}>{pending}</span>} ·{" "}
               <button onClick={auth.signOut} style={{ background: "none", border: "none", color: "#CFEFE5", cursor: "pointer", fontSize: 12, fontWeight: 600, textDecoration: "underline" }}>Sign out</button>
             </div>
           )}
@@ -2123,7 +2150,7 @@ export default function App() {
           {view === "grantee-detail" && <GranteeDetail org={selectedOrg} setView={nav} goGrantee={goGrantee} narrow={narrow} />}
           {view === "request-grant"  && <RequestGrantForm narrow={narrow} setView={nav} />}
           {view === "contribute"     && <ContributionForm narrow={narrow} setView={nav} />}
-          {view === "queue"          && auth.signedIn && <ProcessingQueue narrow={narrow} setView={nav} />}
+          {view === "queue"          && auth.signedIn && <ProcessingQueue narrow={narrow} setView={nav} onChange={() => refreshPending(session)} />}
 
           <div style={{ padding: "32px 20px", textAlign: "center", fontSize: 11, color: "#7C8C8A", fontFamily: "'Fredoka', serif", letterSpacing: "0.08em" }}>
             KENDACAR FOUNDATION &middot; CONFIDENTIAL &middot; FOR FAMILY USE ONLY
