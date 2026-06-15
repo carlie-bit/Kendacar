@@ -1493,9 +1493,30 @@ function GranteesDirectory({ goGrantee, narrow }) {
   const topYears = topSeries.length ? topSeries[0].year + "–" + topSeries[topSeries.length - 1].year : "";
   const topPct = top && totalAll ? Math.round((top.value / totalAll) * 100) : 0;
 
+  // Distinct-grantee counts over time. Grants are recorded by year only (no exact
+  // dates), so "last 5 years" = the last 5 calendar years and "trailing 12 months"
+  // is approximated by the current calendar year.
+  const { cntAll, cnt5, cnt5Span, cnt12, curYear } = useMemo(() => {
+    const curYear = new Date().getFullYear();
+    const distinctSince = startYear => new Set(grants.filter(g => g.year >= startYear).map(g => normalizeOrg(g.org))).size;
+    return {
+      curYear,
+      cntAll: index.length,
+      cnt5: distinctSince(curYear - 4),
+      cnt5Span: (curYear - 4) + "–" + curYear,
+      cnt12: distinctSince(curYear),
+    };
+  }, [grants, index]);
+
   return (
     <div style={{ maxWidth: 1140, margin: "0 auto", padding: narrow ? "28px 16px" : "36px 40px" }}>
       <SectionTitle title="Grantees" sub={index.length + " organizations, ranked by total support received"} />
+
+      <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "repeat(3, minmax(0,1fr))", gap: 16, marginBottom: 16 }}>
+        <StatCard label="Grantees, all-time" value={cntAll} sub="organizations supported since 2001" accent={TEAL} />
+        <StatCard label="Active, last 5 years" value={cnt5} sub={"organizations · " + cnt5Span} accent={CORAL} />
+        <StatCard label="Active, trailing 12 months" value={cnt12} sub={"organizations · " + curYear + " grant cycle"} accent={SUN} />
+      </div>
 
       {top && (
         <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "minmax(0,1.35fr) minmax(0,1fr)", gap: 16, marginBottom: 26 }}>
