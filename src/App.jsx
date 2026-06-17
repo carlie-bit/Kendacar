@@ -1819,24 +1819,35 @@ function ProgramCard({ program, color, signedIn, onEdit, narrow }) {
       {metrics.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 18 }}>
           {metrics.map((m, i) => {
-            const hasTarget = m.target !== null && m.target !== undefined && m.target !== "" && Number(m.target) > 0;
+            const unit = m.unit || "";
+            const money = unit === "$", pctU = unit === "%";
+            const fmtN = v => money ? fmt(Number(v)) : Number(v).toLocaleString() + (pctU ? "%" : "");
+            const suffix = (!money && !pctU && unit) ? " " + unit : "";
+            const targetNum = m.target === null || m.target === undefined || m.target === "" ? null : Number(m.target);
             const cur = m.current === null || m.current === undefined || m.current === "" ? null : Number(m.current);
-            const pct = hasTarget && cur !== null ? Math.min(100, Math.round((cur / Number(m.target)) * 100)) : null;
+            const hasTarget = targetNum !== null && targetNum > 0;
+            const pct = hasTarget && cur !== null ? Math.round((cur / targetNum) * 100) : null;
+            const over = pct !== null && pct > 100;
             return (
               <div key={i}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 5 }}>
                   <span style={{ fontSize: 13.5, fontWeight: 600, color: INK, fontFamily: FONT_BODY }}>{m.label}</span>
                   <span style={{ fontSize: 13, color: "#7C8C8A", fontFamily: FONT_BODY, whiteSpace: "nowrap" }}>
-                    <strong style={{ color: cur !== null ? color : "#B7A89A" }}>{cur !== null ? fmtMetric(cur, m.unit) : "—"}</strong>
-                    {" "}<span style={{ fontSize: 12 }}>/ {hasTarget ? fmtMetric(m.target, m.unit) : "target TBD"}</span>
+                    {hasTarget ? (
+                      <><strong style={{ color: cur !== null ? color : "#B7A89A" }}>{cur !== null ? fmtN(cur) : "—"}</strong>{" "}<span style={{ fontSize: 12 }}>/ {fmtN(targetNum)}{suffix}</span></>
+                    ) : cur !== null ? (
+                      <><strong style={{ color }}>{fmtN(cur)}{suffix}</strong>{" "}<span style={{ fontSize: 12, color: "#9B8E80" }}>&middot; tracked</span></>
+                    ) : (
+                      <span style={{ color: "#B7A89A" }}>target TBD</span>
+                    )}
                   </span>
                 </div>
                 <div style={{ height: 7, background: "#F3ECE3", borderRadius: 4, overflow: "hidden" }}>
                   {pct !== null
-                    ? <div style={{ height: 7, width: pct + "%", background: color, borderRadius: 4 }} />
+                    ? <div style={{ height: 7, width: Math.min(100, pct) + "%", background: over ? CORAL : color, borderRadius: 4 }} />
                     : <div style={{ height: 7, width: "100%", background: "repeating-linear-gradient(90deg," + LINE + "," + LINE + " 5px,transparent 5px,transparent 10px)" }} />}
                 </div>
-                {pct !== null && <div style={{ fontSize: 11, color: "#9B8E80", marginTop: 3, fontFamily: FONT_BODY }}>{pct}% of target</div>}
+                {pct !== null && <div style={{ fontSize: 11, color: over ? CORAL : "#9B8E80", marginTop: 3, fontFamily: FONT_BODY }}>{over ? "Above plan (" + pct + "%)" : pct + "% of target"}</div>}
               </div>
             );
           })}
