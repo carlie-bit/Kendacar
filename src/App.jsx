@@ -163,13 +163,14 @@ const useAuth = () => useContext(AuthContext);
 
 // Pull every display table in parallel and shape it like the fallback data.
 async function fetchLiveData() {
-  const [grants, donations, assets, settings, notes, updates] = await Promise.all([
+  const [grants, donations, assets, settings, notes, updates, programs] = await Promise.all([
     sb("grants?select=id,year,org,amount,category&order=year.desc,amount.desc"),
     sb("donations?select=id,year,donor,amount&order=year.desc"),
     sb("investment_assets?select=id,name,value,sort_order&order=sort_order"),
     sb("settings?select=key,value"),
     sb("grantee_notes?select=org,display_name,contact,contact_role,contact_email,website,description,community,note"),
     sb("grantee_updates?select=id,org,title,body,author,photos,created_at&order=created_at.desc"),
+    sb("grantee_programs?select=id,org,name,purpose,metrics,sort_order,status&order=sort_order"),
   ]);
   const setMap = Object.fromEntries(settings.map(s => [s.key, s.value]));
   const noteMap = {};
@@ -183,6 +184,13 @@ async function fetchLiveData() {
     (updateMap[u.org] = updateMap[u.org] || []).push({
       id: u.id, title: u.title, body: u.body, author: u.author,
       photos: Array.isArray(u.photos) ? u.photos : [], created_at: u.created_at,
+    });
+  });
+  const programMap = {};
+  programs.forEach(p => {
+    (programMap[p.org] = programMap[p.org] || []).push({
+      id: p.id, name: p.name, purpose: p.purpose, status: p.status, sortOrder: p.sort_order,
+      metrics: Array.isArray(p.metrics) ? p.metrics : [],
     });
   });
   return {
@@ -200,6 +208,7 @@ async function fetchLiveData() {
     },
     granteeNotes: noteMap,
     granteeUpdates: updateMap,
+    granteePrograms: programMap,
   };
 }
 
@@ -535,6 +544,7 @@ const FALLBACK_DATA = {
   investments: FALLBACK_INVESTMENTS,
   granteeNotes: FALLBACK_GRANTEE_NOTES,
   granteeUpdates: {},
+  granteePrograms: {},
 };
 
 const DataContext = createContext(FALLBACK_DATA);
@@ -1708,16 +1718,147 @@ function UpdateComposer({ org, onDone }) {
   );
 }
 
+// Format a single metric value, respecting its unit ($ vs. count).
+function fmtMetric(value, unit) {
+  if (value === null || value === undefined || value === "") return "—";
+  const n = Number(value);
+  if (unit === "$") return fmt(n);
+  return n.toLocaleString() + (unit && unit !== "$" ? " " + unit : "");
+}
+
+// Editor for a single program: name, purpose, and a dynamic list of metrics
+// (label / unit / target / current). Used for both adding and editing.
+function ProgramEditor({ org, program, onDone }) {
+  const { session, setSession } = useAuth();
+  const { refresh } = useData();
+  const [name, setName] = useState(program?.name || "");
+  const [purpose, setPurpose] = useState(program?.purpose || "");
+  const [metrics, setMetrics] = useState(
+    program?.metrics?.length ? program.metrics.map(m => ({ ...m })) : [{ label: "", unit: "", target: "", current: "" }]
+  );
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const setM = (i, k, v) => setMetrics(metrics.map((m, j) => j === i ? { ...m, [k]: v } : m));
+  const addM = () => setMetrics([...metrics, { label: "", unit: "", target: "", current: "" }]);
+  const rmM = i => setMetrics(metrics.filter((_, j) => j !== i));
+
+  async function save() {
+    if (!name.trim()) { setErr("Give the program a name."); return; }
+    setBusy(true); setErr("");
+    const cleanMetrics = metrics
+      .filter(m => m.label.trim())
+      .map(m => ({
+        label: m.label.trim(),
+        unit: (m.unit || "").trim(),
+        target: m.target === "" || m.target === null ? null : Number(m.target),
+        current: m.current === "" || m.current === null ? null : Number(m.current),
+      }));
+    const payload = { org, name: name.trim(), purpose: purpose.trim() || null, metrics: cleanMetrics, updated_at: new Date().toISOString() };
+    try {
+      if (program?.id) await authedWrite(session, setSession, "PATCH", "grantee_programs?id=eq." + program.id, payload);
+      else await authedWrite(session, setSession, "POST", "grantee_programs", payload);
+      await refresh(); onDone();
+    } catch (e) { setErr(e.message); setBusy(false); }
+  }
+
+  async function remove() {
+    if (!program?.id) return;
+    if (!window.confirm("Remove this program and its tracked outcomes? This can't be undone.")) return;
+    setBusy(true); setErr("");
+    try {
+      await authedWrite(session, setSession, "DELETE", "grantee_programs?id=eq." + program.id, null);
+      await refresh(); onDone();
+    } catch (e) { setErr(e.message); setBusy(false); }
+  }
+
+  const lbl = { fontFamily: FONT_BODY, fontWeight: 700, fontSize: 12, color: INK, marginBottom: 4 };
+  return (
+    <Card style={{ padding: 22, marginBottom: 16, background: "#FBF4EC" }}>
+      <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, marginBottom: 14 }}>{program ? "Edit program" : "Add a program"}</div>
+      <div style={{ marginBottom: 12 }}>
+        <div style={lbl}>Program name</div>
+        <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Fostering Futures Program" style={{ ...formInput, fontSize: 14, padding: "9px 12px" }} />
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <div style={lbl}>What it does</div>
+        <textarea value={purpose} onChange={e => setPurpose(e.target.value)} rows={3} placeholder="A sentence or two on the program's purpose." style={{ ...formInput, fontSize: 14, padding: "9px 12px", resize: "vertical" }} />
+      </div>
+      <div style={{ ...lbl, fontSize: 13, marginBottom: 8 }}>Outcomes to track</div>
+      <div style={{ fontSize: 12, color: "#9B8E80", marginBottom: 10 }}>Set the expectation (target) for each measure. Leave a target blank until the grantee gives us their number — fill in &ldquo;current&rdquo; as progress comes in.</div>
+      {metrics.map((m, i) => (
+        <div key={i} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr auto", gap: 8, marginBottom: 8, alignItems: "center" }}>
+          <input value={m.label} onChange={e => setM(i, "label", e.target.value)} placeholder="Measure (e.g. Youth served)" style={{ ...formInput, fontSize: 13, padding: "8px 10px" }} />
+          <input value={m.unit} onChange={e => setM(i, "unit", e.target.value)} placeholder="Unit ($, youth…)" style={{ ...formInput, fontSize: 13, padding: "8px 10px" }} />
+          <input value={m.target ?? ""} onChange={e => setM(i, "target", e.target.value)} type="number" placeholder="Target" style={{ ...formInput, fontSize: 13, padding: "8px 10px" }} />
+          <input value={m.current ?? ""} onChange={e => setM(i, "current", e.target.value)} type="number" placeholder="Current" style={{ ...formInput, fontSize: 13, padding: "8px 10px" }} />
+          <button onClick={() => rmM(i)} title="Remove measure" style={{ background: "none", border: "none", color: "#B5451B", cursor: "pointer", fontSize: 18, lineHeight: 1, padding: "0 4px" }}>&times;</button>
+        </div>
+      ))}
+      <button onClick={addM} style={{ background: "none", border: "1px dashed " + LINE, borderRadius: 8, color: TEAL, cursor: "pointer", fontSize: 13, fontWeight: 700, padding: "7px 12px", fontFamily: FONT_BODY, marginBottom: 16 }}>+ Add a measure</button>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <MiniButton kind="save" onClick={save} disabled={busy}>{busy ? "Saving…" : "Save program"}</MiniButton>
+        <MiniButton kind="cancel" onClick={onDone} disabled={busy}>Cancel</MiniButton>
+        {program?.id && <button onClick={remove} disabled={busy} style={{ marginLeft: "auto", background: "none", border: "none", color: "#B5451B", cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: FONT_BODY }}>Delete program</button>}
+      </div>
+      {err && <div style={{ color: "#B5451B", fontSize: 12, marginTop: 8 }}>{err}</div>}
+    </Card>
+  );
+}
+
+// Read-only card for one program: purpose + each tracked outcome as target/current.
+function ProgramCard({ program, color, signedIn, onEdit, narrow }) {
+  const metrics = program.metrics || [];
+  return (
+    <Card style={{ padding: narrow ? 20 : "24px 26px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 19, color: INK }}>{program.name}</div>
+        {signedIn && <MiniButton kind="edit" onClick={onEdit}>Edit</MiniButton>}
+      </div>
+      {program.purpose && <div style={{ fontSize: 14, color: "#5E6E6C", lineHeight: 1.55, marginTop: 6, fontFamily: FONT_BODY }}>{program.purpose}</div>}
+      {metrics.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14, marginTop: 18 }}>
+          {metrics.map((m, i) => {
+            const hasTarget = m.target !== null && m.target !== undefined && m.target !== "" && Number(m.target) > 0;
+            const cur = m.current === null || m.current === undefined || m.current === "" ? null : Number(m.current);
+            const pct = hasTarget && cur !== null ? Math.min(100, Math.round((cur / Number(m.target)) * 100)) : null;
+            return (
+              <div key={i}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 5 }}>
+                  <span style={{ fontSize: 13.5, fontWeight: 600, color: INK, fontFamily: FONT_BODY }}>{m.label}</span>
+                  <span style={{ fontSize: 13, color: "#7C8C8A", fontFamily: FONT_BODY, whiteSpace: "nowrap" }}>
+                    <strong style={{ color: cur !== null ? color : "#B7A89A" }}>{cur !== null ? fmtMetric(cur, m.unit) : "—"}</strong>
+                    {" "}<span style={{ fontSize: 12 }}>/ {hasTarget ? fmtMetric(m.target, m.unit) : "target TBD"}</span>
+                  </span>
+                </div>
+                <div style={{ height: 7, background: "#F3ECE3", borderRadius: 4, overflow: "hidden" }}>
+                  {pct !== null
+                    ? <div style={{ height: 7, width: pct + "%", background: color, borderRadius: 4 }} />
+                    : <div style={{ height: 7, width: "100%", background: "repeating-linear-gradient(90deg," + LINE + "," + LINE + " 5px,transparent 5px,transparent 10px)" }} />}
+                </div>
+                {pct !== null && <div style={{ fontSize: 11, color: "#9B8E80", marginTop: 3, fontFamily: FONT_BODY }}>{pct}% of target</div>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {metrics.length === 0 && <div style={{ fontSize: 13, color: "#9B8E80", marginTop: 12, fontFamily: FONT_BODY, fontStyle: "italic" }}>No outcomes set yet.</div>}
+    </Card>
+  );
+}
+
 function GranteeDetail({ org, setView, goGrantee, narrow }) {
-  const { grants, granteeNotes, granteeUpdates } = useData();
+  const { grants, granteeNotes, granteeUpdates, granteePrograms } = useData();
   const { signedIn, session, setSession } = useAuth();
   const { refresh } = useData();
   const index = useMemo(() => buildGranteeIndex(grants), [grants]);
   const rec = index.find(o => o.org === org);
   const note = granteeNotes[org];
   const updates = granteeUpdates[org] || [];
+  const programs = granteePrograms[org] || [];
   const [editingProfile, setEditingProfile] = useState(false);
   const [composing, setComposing] = useState(false);
+  const [editingProgram, setEditingProgram] = useState(null); // null | "new" | program object
   if (!rec) {
     return (
       <div style={{ maxWidth: 1140, margin: "0 auto", padding: "36px 40px" }}>
@@ -1824,8 +1965,35 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
         </Card>
       </div>
 
+      {/* Programs & outcomes */}
+      <div style={{ marginTop: 32 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
+          <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 24, color: INK }}>Programs &amp; Outcomes</div>
+          {signedIn && !editingProgram && <MiniButton kind="edit" onClick={() => setEditingProgram("new")}>+ Add a program</MiniButton>}
+        </div>
+        <div style={{ fontSize: 13, color: "#7C8C8A", fontFamily: FONT_BODY, marginBottom: 16, maxWidth: 720 }}>
+          What this grantee&rsquo;s funding supports, and the outcomes we expect to see — tracked against target as results come in.
+        </div>
+
+        {signedIn && editingProgram && (
+          <ProgramEditor org={org} program={editingProgram === "new" ? null : editingProgram} onDone={() => setEditingProgram(null)} />
+        )}
+
+        {programs.length === 0 && !editingProgram && (
+          <Card style={{ padding: "28px 24px", textAlign: "center", color: "#9B8E80", fontFamily: FONT_BODY, fontSize: 14 }}>
+            No programs tracked yet.{signedIn ? " Add one to set the outcomes we expect from this grantee." : ""}
+          </Card>
+        )}
+
+        <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "1fr 1fr", gap: 16 }}>
+          {programs.map(p => (
+            <ProgramCard key={p.id} program={p} color={c} signedIn={signedIn} narrow={narrow} onEdit={() => setEditingProgram(p)} />
+          ))}
+        </div>
+      </div>
+
       {/* Updates feed */}
-      <div style={{ marginTop: 28 }}>
+      <div style={{ marginTop: 32 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
           <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 24, color: INK }}>Updates</div>
           {signedIn && !composing && <MiniButton kind="edit" onClick={() => setComposing(true)}>+ Post an update</MiniButton>}
