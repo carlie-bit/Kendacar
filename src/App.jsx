@@ -168,7 +168,7 @@ async function fetchLiveData() {
     sb("donations?select=id,year,donor,amount&order=year.desc"),
     sb("investment_assets?select=id,name,value,sort_order&order=sort_order"),
     sb("settings?select=key,value"),
-    sb("grantee_notes?select=org,display_name,contact,contact_role,contact_email,website,description,community,note"),
+    sb("grantee_notes?select=org,display_name,contact,contact_role,contact_email,website,description,community,note,core_outcomes"),
     sb("grantee_updates?select=id,org,title,body,author,photos,created_at&order=created_at.desc"),
     sb("grantee_programs?select=id,org,name,purpose,metrics,sort_order,status&order=sort_order"),
   ]);
@@ -178,6 +178,7 @@ async function fetchLiveData() {
     displayName: n.display_name, contact: n.contact, contactRole: n.contact_role,
     contactEmail: n.contact_email, website: n.website, description: n.description,
     community: n.community, note: n.note,
+    coreOutcomes: n.core_outcomes || null,
   }; });
   const updateMap = {};
   updates.forEach(u => {
@@ -572,6 +573,19 @@ const LINE = "#EFE7DD";
 const FONT_DISPLAY = "'Fredoka', sans-serif";
 const FONT_BODY = "'Nunito Sans', sans-serif";
 const FONT_ACCENT = "'Caveat', cursive";
+
+// The shared mission Kendacar holds every youth grantee to — from the brand backbone.
+const SHARED_PURPOSE = "Helping every young person make it all the way to adulthood — housed, working or learning, and connected to someone who has their back.";
+
+// The four core outcomes every youth grantee reports against, in the same language.
+const CORE_OUTCOMES = [
+  { key: "education",  label: "Education",     blurb: "Earned, or on track for, a diploma or GED",  color: "#3E7CB1" },
+  { key: "work",       label: "Work or school", blurb: "Employed, or enrolled in school or training", color: "#2FA39B" },
+  { key: "housing",    label: "Housing",       blurb: "In stable housing",                           color: "#C77D3A" },
+  { key: "connection", label: "Connection",    blurb: "Has at least one steady, caring adult",       color: "#B5577E" },
+];
+// Categories that carry the shared youth-outcomes framework.
+const YOUTH_CATEGORIES = ["Children & Youth"];
 
 // The "hop mark" — a little bounce ending on a coral landing.
 function HopMark({ size = 30, light = false }) {
@@ -1858,6 +1872,99 @@ function ProgramCard({ program, color, signedIn, onEdit, narrow }) {
   );
 }
 
+// The shared Kendacar outcomes block — same purpose line and four measures on every youth grantee.
+function CoreOutcomesCard({ outcomes, signedIn, onEdit, narrow }) {
+  const served = outcomes && outcomes.served != null && outcomes.served !== "" ? Number(outcomes.served) : null;
+  return (
+    <div style={{ background: "linear-gradient(160deg,#FFFDF9,#F6FBFA)", border: "1px solid " + LINE, borderTop: "4px solid " + TEAL, borderRadius: 18, padding: narrow ? 20 : "26px 30px", marginBottom: 24 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: TEAL, fontFamily: FONT_BODY }}>Kendacar Core Outcomes</div>
+          <div style={{ fontFamily: FONT_ACCENT, fontSize: narrow ? 22 : 26, color: INK, lineHeight: 1.2, marginTop: 6, maxWidth: 760 }}>{SHARED_PURPOSE}</div>
+        </div>
+        {signedIn && <MiniButton kind="edit" onClick={onEdit}>{outcomes ? "Edit" : "Add numbers"}</MiniButton>}
+      </div>
+      <div style={{ fontSize: 12.5, color: "#7C8C8A", fontFamily: FONT_BODY, margin: "12px 0 18px", maxWidth: 760 }}>
+        The same four measures every Kendacar youth grantee reports — so the focus stays on whether young people are making it, and the organizations are working toward one goal together.
+        {served != null && <> <strong style={{ color: INK }}>{served.toLocaleString()} young people</strong> served in scope.</>}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "1fr 1fr", gap: narrow ? 14 : "16px 28px" }}>
+        {CORE_OUTCOMES.map(o => {
+          const reached = outcomes && outcomes[o.key] != null && outcomes[o.key] !== "" ? Number(outcomes[o.key]) : null;
+          const pct = served && served > 0 && reached != null ? Math.round((reached / served) * 100) : null;
+          return (
+            <div key={o.key}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+                <span style={{ fontSize: 14, fontWeight: 700, color: INK, fontFamily: FONT_BODY }}>{o.label}</span>
+                <span style={{ fontSize: 13, color: "#7C8C8A", fontFamily: FONT_BODY, whiteSpace: "nowrap" }}>
+                  {reached != null
+                    ? <><strong style={{ color: o.color }}>{reached.toLocaleString()}</strong>{served != null && <> of {served.toLocaleString()}{pct != null && <> &middot; {pct}%</>}</>}</>
+                    : <span style={{ color: "#B7A89A" }}>awaiting report</span>}
+                </span>
+              </div>
+              <div style={{ fontSize: 11.5, color: "#9B8E80", fontFamily: FONT_BODY, margin: "2px 0 6px" }}>{o.blurb}</div>
+              <div style={{ height: 7, background: "#EEE7DD", borderRadius: 4, overflow: "hidden" }}>
+                {pct != null
+                  ? <div style={{ height: 7, width: Math.min(100, pct) + "%", background: o.color, borderRadius: 4 }} />
+                  : <div style={{ height: 7, width: "100%", background: "repeating-linear-gradient(90deg," + LINE + "," + LINE + " 5px,transparent 5px,transparent 10px)" }} />}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Editor for the shared core-outcomes numbers (served + one count per outcome).
+function CoreOutcomesEditor({ org, note, onDone }) {
+  const { session, setSession } = useAuth();
+  const { refresh } = useData();
+  const existing = note?.coreOutcomes || {};
+  const [served, setServed] = useState(existing.served ?? "");
+  const [vals, setVals] = useState(() => Object.fromEntries(CORE_OUTCOMES.map(o => [o.key, existing[o.key] ?? ""])));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const num = v => v === "" || v === null ? null : Number(v);
+
+  async function save() {
+    setBusy(true); setErr("");
+    const payload = { served: num(served) };
+    CORE_OUTCOMES.forEach(o => { payload[o.key] = num(vals[o.key]); });
+    try {
+      if (note) await authedWrite(session, setSession, "PATCH", "grantee_notes?org=eq." + encodeURIComponent(org), { core_outcomes: payload });
+      else await authedWrite(session, setSession, "POST", "grantee_notes", { org, core_outcomes: payload });
+      await refresh(); onDone();
+    } catch (e) { setErr(e.message); setBusy(false); }
+  }
+
+  const fieldStyle = { ...formInput, fontSize: 14, padding: "8px 10px" };
+  return (
+    <Card style={{ padding: 22, marginBottom: 16, background: "#FBF4EC" }}>
+      <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, marginBottom: 4 }}>Kendacar Core Outcomes</div>
+      <div style={{ fontSize: 12.5, color: "#7C8C8A", marginBottom: 14 }}>Enter how many young people are served in scope, then how many have reached each outcome. Leave blank where you don&rsquo;t have a number yet.</div>
+      <div style={{ marginBottom: 14, maxWidth: 280 }}>
+        <div style={{ fontFamily: FONT_BODY, fontWeight: 700, fontSize: 12, color: INK, marginBottom: 4 }}>Young people served (in scope)</div>
+        <input value={served} onChange={e => setServed(e.target.value)} type="number" placeholder="e.g. 35" style={fieldStyle} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: narrowGrid(), gap: 12 }}>
+        {CORE_OUTCOMES.map(o => (
+          <div key={o.key}>
+            <div style={{ fontFamily: FONT_BODY, fontWeight: 700, fontSize: 12, color: INK, marginBottom: 4 }}>{o.label} <span style={{ fontWeight: 400, color: "#9B8E80" }}>— # reached</span></div>
+            <input value={vals[o.key]} onChange={e => setVals({ ...vals, [o.key]: e.target.value })} type="number" placeholder="#" style={fieldStyle} />
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+        <MiniButton kind="save" onClick={save} disabled={busy}>{busy ? "Saving…" : "Save outcomes"}</MiniButton>
+        <MiniButton kind="cancel" onClick={onDone} disabled={busy}>Cancel</MiniButton>
+      </div>
+      {err && <div style={{ color: "#B5451B", fontSize: 12, marginTop: 8 }}>{err}</div>}
+    </Card>
+  );
+}
+function narrowGrid() { return "repeat(2, minmax(0,1fr))"; }
+
 function GranteeDetail({ org, setView, goGrantee, narrow }) {
   const { grants, granteeNotes, granteeUpdates, granteePrograms } = useData();
   const { signedIn, session, setSession } = useAuth();
@@ -1870,6 +1977,7 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
   const [editingProfile, setEditingProfile] = useState(false);
   const [composing, setComposing] = useState(false);
   const [editingProgram, setEditingProgram] = useState(null); // null | "new" | program object
+  const [editingCore, setEditingCore] = useState(false);
   if (!rec) {
     return (
       <div style={{ maxWidth: 1140, margin: "0 auto", padding: "36px 40px" }}>
@@ -1926,6 +2034,14 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
           </div>
         )}
       </div>
+
+      {/* Shared Kendacar core outcomes — youth grantees */}
+      {(YOUTH_CATEGORIES.includes(rec.category) || (note && note.coreOutcomes)) && (
+        <>
+          {signedIn && editingCore && <CoreOutcomesEditor org={org} note={note} onDone={() => setEditingCore(false)} />}
+          {!editingCore && <CoreOutcomesCard outcomes={note && note.coreOutcomes} signedIn={signedIn} onEdit={() => setEditingCore(true)} narrow={narrow} />}
+        </>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "1fr 1fr", gap: 20 }}>
         <Card style={{ padding: 24 }}>
