@@ -164,7 +164,7 @@ const useAuth = () => useContext(AuthContext);
 // Pull every display table in parallel and shape it like the fallback data.
 async function fetchLiveData() {
   const [grants, donations, assets, settings, notes, updates, programs] = await Promise.all([
-    sb("grants?select=id,year,org,amount,category&order=year.desc,amount.desc"),
+    sb("grants?select=id,year,org,amount,category,check_number,check_date&order=year.desc,amount.desc"),
     sb("donations?select=id,year,donor,amount&order=year.desc"),
     sb("investment_assets?select=id,name,value,sort_order&order=sort_order"),
     sb("settings?select=key,value"),
@@ -198,6 +198,7 @@ async function fetchLiveData() {
     grants: grants.map(g => ({
       id: g.id, year: Number(g.year), org: g.org, amount: Number(g.amount),
       category: g.category || ORG_CATEGORIES[g.org] || "Community & Social Services",
+      checkNumber: g.check_number || null, checkDate: g.check_date || null,
     })),
     donations: donations.map(d => ({ id: d.id, year: Number(d.year), donor: d.donor, amount: Number(d.amount) })),
     investments: {
@@ -1965,6 +1966,62 @@ function CoreOutcomesEditor({ org, note, onDone }) {
 }
 function narrowGrid() { return "repeat(2, minmax(0,1fr))"; }
 
+// Format a YYYY-MM-DD check date without timezone drift.
+const fmtCheckDate = s => {
+  if (!s) return "";
+  const p = String(s).split("-");
+  if (p.length !== 3) return String(s);
+  const mo = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  return mo[Number(p[1]) - 1] + " " + Number(p[2]) + ", " + p[0];
+};
+
+// One grant row in the history table, with inline check# / date editing for signed-in editors.
+function GrantHistoryRow({ g, i, signedIn }) {
+  const { session, setSession } = useAuth();
+  const { refresh } = useData();
+  const [editing, setEditing] = useState(false);
+  const [cn, setCn] = useState(g.checkNumber || "");
+  const [cd, setCd] = useState(g.checkDate || "");
+  const [busy, setBusy] = useState(false);
+  async function save() {
+    if (!g.id) { setEditing(false); return; }
+    setBusy(true);
+    try {
+      await authedWrite(session, setSession, "PATCH", "grants?id=eq." + g.id, { check_number: cn.trim() || null, check_date: cd || null });
+      await refresh(); setEditing(false);
+    } catch (e) { alert(e.message); } finally { setBusy(false); }
+  }
+  const td = { padding: "10px 16px", borderBottom: "1px solid #F3ECE3" };
+  const bg = i % 2 === 0 ? "#fff" : "#FCF7F1";
+  const payment = g.checkNumber || g.checkDate
+    ? (g.checkNumber ? "#" + g.checkNumber : "") + (g.checkNumber && g.checkDate ? " · " : "") + (g.checkDate ? fmtCheckDate(g.checkDate) : "")
+    : "—";
+  return (
+    <>
+      <tr style={{ background: bg }}>
+        <td style={{ ...td, color: "#7C8C8A" }}>{g.year}</td>
+        <td style={{ ...td, color: "#9B8E80", fontSize: 12 }}>{payment}</td>
+        <td style={{ ...td, fontWeight: 700, color: TEAL, whiteSpace: "nowrap" }}>
+          {fmt(g.amount)}
+          {signedIn && g.id && <button onClick={() => setEditing(e => !e)} title="Edit check details" style={{ marginLeft: 8, background: "none", border: "none", color: "#B7C4C3", cursor: "pointer", fontSize: 13 }}>&#9998;</button>}
+        </td>
+      </tr>
+      {editing && (
+        <tr style={{ background: "#FBF4EC" }}>
+          <td colSpan={3} style={{ padding: "10px 16px", borderBottom: "1px solid #F3ECE3" }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <input value={cn} onChange={e => setCn(e.target.value)} placeholder="Check #" style={{ ...formInput, fontSize: 13, padding: "6px 9px", width: 110 }} />
+              <input value={cd} onChange={e => setCd(e.target.value)} type="date" style={{ ...formInput, fontSize: 13, padding: "6px 9px", width: 160 }} />
+              <MiniButton kind="save" onClick={save} disabled={busy}>{busy ? "…" : "Save"}</MiniButton>
+              <MiniButton kind="cancel" onClick={() => setEditing(false)} disabled={busy}>Cancel</MiniButton>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
 function GranteeDetail({ org, setView, goGrantee, narrow }) {
   const { grants, granteeNotes, granteeUpdates, granteePrograms } = useData();
   const { signedIn, session, setSession } = useAuth();
@@ -2070,25 +2127,23 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
           <div style={{ padding: "16px 20px", borderBottom: "1px solid #F3ECE3" }}>
             <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 18 }}>Grant History</div>
           </div>
-          <div style={{ maxHeight: 300, overflowY: "auto" }}>
+          <div style={{ maxHeight: 320, overflowY: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead>
                 <tr style={{ background: "#FFF8F2" }}>
-                  {["Year", "Amount"].map(h => (
+                  {["Year", "Payment", "Amount"].map(h => (
                     <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontFamily: "'Fredoka', serif", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#7C8C8A" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {rec.grants.slice().sort((a, b) => b.year - a.year).map((g, i) => (
-                  <tr key={g.year + "-" + i} style={{ borderBottom: "1px solid #F3ECE3", background: i % 2 === 0 ? "#fff" : "#FCF7F1" }}>
-                    <td style={{ padding: "10px 16px", color: "#7C8C8A" }}>{g.year}</td>
-                    <td style={{ padding: "10px 16px", fontWeight: 700, color: TEAL }}>{fmt(g.amount)}</td>
-                  </tr>
+                {rec.grants.slice().sort((a, b) => (b.year - a.year) || ((b.checkDate || "") < (a.checkDate || "") ? -1 : 1)).map((g, i) => (
+                  <GrantHistoryRow key={(g.id || g.year) + "-" + i} g={g} i={i} signedIn={signedIn} />
                 ))}
               </tbody>
             </table>
           </div>
+          {signedIn && <div style={{ padding: "8px 16px", fontSize: 11.5, color: "#9B8E80", fontFamily: FONT_BODY }}>Click the &#9998; on any grant to record its check number and date.</div>}
         </Card>
       </div>
 
