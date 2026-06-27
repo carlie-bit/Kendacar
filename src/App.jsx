@@ -1126,9 +1126,40 @@ function narrow720() { return typeof window !== "undefined" && window.innerWidth
 const gainColor = v => v == null ? "#7C8C8A" : Number(v) >= 0 ? "#1F7A52" : "#B5451B";
 const signed = v => (Number(v) >= 0 ? "+" : "") + fmt(Math.abs(Number(v)) * (Number(v) < 0 ? -1 : 1));
 
+// The hover detail card for a single holding.
+function HoldingDetailCard({ h, align }) {
+  return (
+    <div style={{ position: "absolute", zIndex: 40, top: "100%", [align === "right" ? "right" : "left"]: 0, marginTop: 6, width: 268, background: "#fff", border: "1px solid " + LINE, borderRadius: 12, boxShadow: "0 8px 24px rgba(0,0,0,0.16)", padding: "13px 15px", whiteSpace: "normal", fontWeight: 400, textAlign: "left", cursor: "default" }}>
+      <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 14, color: INK }}>{h.symbol}</div>
+      <div style={{ fontSize: 12, color: "#7C8C8A", marginBottom: 8 }}>{h.description}</div>
+      {[["Quantity", h.qty != null ? Number(h.qty).toLocaleString() : "—"],
+        ["Price", h.price != null ? fmt(h.price) : "—"],
+        ["Market value", h.market_value != null ? fmt(h.market_value) : "—"],
+        ["Cost basis", h.cost_basis != null ? fmt(h.cost_basis) : "—"],
+        ["Gain / loss", h.gain != null ? signed(h.gain) + (h.gain_pct != null ? " (" + Number(h.gain_pct).toFixed(1) + "%)" : "") : "—"],
+        ["Asset type", h.asset_type || "—"],
+        ["Sector", h.sector || "—"]].map(([k, v]) => (
+        <div key={k} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 12.5, padding: "2px 0", color: k === "Gain / loss" ? gainColor(h.gain) : "#5E6E6C" }}>
+          <span style={{ color: "#9B8E80" }}>{k}</span><span style={{ fontWeight: 600, textAlign: "right" }}>{v}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// A ticker symbol that reveals the holding's detail card on hover. Reused everywhere.
+function TickerHover({ h, color, align }) {
+  const [show, setShow] = useState(false);
+  return (
+    <span style={{ position: "relative", display: "inline-block" }} onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
+      <span style={{ borderBottom: "1px dotted #B7C4C3", cursor: "default", fontWeight: 700, color: color || INK }}>{h.symbol}</span>
+      {show && <HoldingDetailCard h={h} align={align} />}
+    </span>
+  );
+}
+
 // Holdings table for one account, with hover-for-detail on each ticker.
 function HoldingsTable({ holdings, narrow }) {
-  const [hover, setHover] = useState(null); // index of hovered row
   const th = { padding: "9px 12px", textAlign: "left", fontFamily: FONT_DISPLAY, fontSize: 10.5, letterSpacing: "0.06em", textTransform: "uppercase", color: "#7C8C8A", position: "sticky", top: 0, background: "#FFF8F2" };
   const td = { padding: "9px 12px", borderBottom: "1px solid #F3ECE3", fontFamily: FONT_BODY };
   const rt = { textAlign: "right" };
@@ -1149,24 +1180,8 @@ function HoldingsTable({ holdings, narrow }) {
         <tbody>
           {holdings.map((h, i) => (
             <tr key={h.id} style={{ background: i % 2 === 0 ? "#fff" : "#FCF7F1" }}>
-              <td style={{ ...td, position: "relative", fontWeight: 700, color: INK, whiteSpace: "nowrap" }}>
-                <span onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)} style={{ cursor: "default", borderBottom: "1px dotted #B7C4C3" }}>{h.symbol}</span>
-                {hover === i && (
-                  <div style={{ position: "absolute", zIndex: 30, top: "100%", left: 0, marginTop: 6, width: 270, background: "#fff", border: "1px solid " + LINE, borderRadius: 12, boxShadow: "0 8px 24px rgba(0,0,0,0.14)", padding: "13px 15px", whiteSpace: "normal", fontWeight: 400 }}>
-                    <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 14, color: INK }}>{h.symbol}</div>
-                    <div style={{ fontSize: 12, color: "#7C8C8A", marginBottom: 8 }}>{h.description}</div>
-                    {[["Quantity", h.qty != null ? Number(h.qty).toLocaleString() : "—"],
-                      ["Price", h.price != null ? fmt(h.price) : "—"],
-                      ["Market value", h.market_value != null ? fmt(h.market_value) : "—"],
-                      ["Cost basis", h.cost_basis != null ? fmt(h.cost_basis) : "—"],
-                      ["Gain / loss", h.gain != null ? signed(h.gain) + (h.gain_pct != null ? " (" + Number(h.gain_pct).toFixed(1) + "%)" : "") : "—"],
-                      ["Asset type", h.asset_type || "—"]].map(([k, v]) => (
-                      <div key={k} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "2px 0", color: k === "Gain / loss" ? gainColor(h.gain) : "#5E6E6C" }}>
-                        <span style={{ color: "#9B8E80" }}>{k}</span><span style={{ fontWeight: 600 }}>{v}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
+              <td style={{ ...td, fontWeight: 700, color: INK, whiteSpace: "nowrap" }}>
+                <TickerHover h={h} />
               </td>
               {!narrow && <td style={{ ...td, color: "#5E6E6C", maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{h.description}</td>}
               <td style={{ ...td, ...rt, color: "#5E6E6C" }}>{h.qty != null ? Number(h.qty).toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—"}</td>
@@ -1321,7 +1336,7 @@ function AccountsDrilldown({ narrow }) {
                       <div style={{ margin: "8px 0 4px", paddingLeft: 16 }}>
                         {s.items.slice().sort((a, b) => (Number(b.market_value) || 0) - (Number(a.market_value) || 0)).map(h => (
                           <div key={h.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "3px 0", color: "#5E6E6C", fontFamily: FONT_BODY }}>
-                            <span><strong style={{ color: INK }}>{h.symbol}</strong> <span style={{ color: "#9B8E80" }}>· {acctName(h.account_id)}</span></span>
+                            <span><TickerHover h={h} align="left" /> <span style={{ color: "#9B8E80" }}>· {acctName(h.account_id)}</span></span>
                             <span>{fmt(h.market_value)}</span>
                           </div>
                         ))}
