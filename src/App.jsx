@@ -2682,9 +2682,10 @@ function MarkSentRow({ req, onDone }) {
     setBusy(true); setErr("");
     const yr = date ? Number(date.slice(0, 4)) : new Date().getFullYear();
     try {
-      // 1) create the grant
+      // 1) create the grant (carrying the check details)
       await authedWrite(session, setSession, "POST", "grants",
-        { year: yr, org: req.org, amount: Number(amount), category: req.category || ORG_CATEGORIES[req.org] || "Community & Social Services" });
+        { year: yr, org: req.org, amount: Number(amount), category: req.category || ORG_CATEGORIES[req.org] || "Community & Social Services",
+          check_number: checkNo.trim() || null, check_date: date || null });
       // 2) mark the recommendation as sent
       await authedWrite(session, setSession, "PATCH", "grant_requests?id=eq." + req.id,
         { status: "sent", check_date: date || null, check_number: checkNo.trim() || null, processed_at: new Date().toISOString() });
@@ -2826,9 +2827,10 @@ export default function App() {
         refreshSession(existing).then(r => { if (r) { setSession(r); saveSession(r); } else { saveSession(null); } });
       } else setSession(existing);
     }
-    // Deep-link to a form page (shareable links like .../Kendacar/#request-grant)
+    // Deep-link to a page (shareable links like .../Kendacar/#request-grant or #review)
     const h = window.location.hash.replace("#", "");
     if (h === "request-grant" || h === "contribute") setView(h);
+    else if (h === "review" || h === "queue") setView("queue");
     loadData();
   }, []);
 
@@ -2837,8 +2839,8 @@ export default function App() {
 
   function nav(v) {
     setView(v); setSelectedOrg(null);
-    const hashView = v === "request-grant" || v === "contribute";
-    history.replaceState(null, "", window.location.pathname + window.location.search + (hashView ? "#" + v : ""));
+    const hashFor = (v === "request-grant" || v === "contribute") ? v : (v === "queue" ? "review" : "");
+    history.replaceState(null, "", window.location.pathname + window.location.search + (hashFor ? "#" + hashFor : ""));
     window.scrollTo({ top: 0 });
   }
   function goGrantee(org) { setSelectedOrg(org); setView("grantee-detail"); window.scrollTo({ top: 0 }); }
@@ -2874,7 +2876,13 @@ export default function App() {
           {view === "grantee-detail" && <GranteeDetail org={selectedOrg} setView={nav} goGrantee={goGrantee} narrow={narrow} />}
           {view === "request-grant"  && <RequestGrantForm narrow={narrow} setView={nav} />}
           {view === "contribute"     && <ContributionForm narrow={narrow} setView={nav} />}
-          {view === "queue"          && auth.signedIn && <ProcessingQueue narrow={narrow} setView={nav} onChange={() => refreshPending(session)} />}
+          {view === "queue"          && (auth.signedIn
+            ? <ProcessingQueue narrow={narrow} setView={nav} onChange={() => refreshPending(session)} />
+            : <div style={{ maxWidth: 560, margin: "0 auto", padding: narrow ? "40px 16px" : "60px 40px", textAlign: "center" }}>
+                <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 24, color: INK, marginBottom: 8 }}>Sign in to review submissions</div>
+                <div style={{ fontSize: 14, color: "#7C8C8A", fontFamily: FONT_BODY, marginBottom: 18 }}>Grant recommendations are private to the family. Sign in with your email to see and process them.</div>
+                <SignInControl />
+              </div>)}
 
           <div style={{ padding: "32px 20px", textAlign: "center", fontSize: 11, color: "#7C8C8A", fontFamily: "'Fredoka', serif", letterSpacing: "0.08em" }}>
             KENDACAR FOUNDATION &middot; CONFIDENTIAL &middot; FOR FAMILY USE ONLY
