@@ -1182,12 +1182,23 @@ function HoldingsTable({ holdings, narrow }) {
   );
 }
 
-// Admin-only account drill-down: tiles per account -> click -> holdings with as-of + hover.
+const SECTOR_COLORS = {
+  "Diversified Equity (US)": TEAL, "International Equity": "#2FA39B", "Fixed Income": "#3A6B9C",
+  "Industrials": "#C77D3A", "Energy": "#B5451B", "Commodities": "#C9A227", "Financials": "#5B8C5A",
+  "Communication Services": "#7B5EA7", "Cash": SUN, "Technology": "#2C7BE5", "Health Care": "#3FA796",
+  "Alternatives": "#9B6A8F", "Consumer Discretionary": "#E08A4B", "Real Estate": "#8A6D3B", "Other": "#999",
+};
+const secColor = s => SECTOR_COLORS[s] || "#999";
+
+// Admin-only account drill-down: by-account view OR holistic by-sector view.
 function AccountsDrilldown({ narrow }) {
   const { session, setSession } = useAuth();
   const [accts, setAccts] = useState(null);
+  const [all, setAll] = useState([]);
   const [holds, setHolds] = useState({});
   const [sel, setSel] = useState(null);
+  const [mode, setMode] = useState("account"); // "account" | "sector"
+  const [openSector, setOpenSector] = useState(null);
   const [err, setErr] = useState("");
 
   useEffect(() => {
@@ -1198,7 +1209,7 @@ function AccountsDrilldown({ narrow }) {
         const h = await authedGet(session, setSession, "holdings?select=*&order=account_id,sort_order");
         if (!live) return;
         const byA = {}; h.forEach(x => { (byA[x.account_id] = byA[x.account_id] || []).push(x); });
-        setHolds(byA); setAccts(a);
+        setHolds(byA); setAll(h); setAccts(a);
       } catch (e) { if (live) setErr(e.message); }
     })();
     return () => { live = false; };
@@ -1208,39 +1219,120 @@ function AccountsDrilldown({ narrow }) {
   if (!accts) return <Card style={{ padding: 20, marginTop: 18, color: "#9B8E80", fontSize: 13 }}>Loading accounts…</Card>;
 
   const selAcct = accts.find(a => a.id === sel);
+  const acctName = id => { const a = accts.find(x => x.id === id); return a ? a.mask : id; };
+  const portTotal = all.reduce((s, h) => s + (Number(h.market_value) || 0), 0);
+
+  // Sector aggregation across all accounts.
+  const bySector = {};
+  all.forEach(h => {
+    const k = h.sector || "Other";
+    (bySector[k] = bySector[k] || { total: 0, items: [] });
+    bySector[k].total += Number(h.market_value) || 0;
+    bySector[k].items.push(h);
+  });
+  const sectorRows = Object.entries(bySector).map(([name, v]) => ({ name, value: v.total, items: v.items })).sort((a, b) => b.value - a.value);
+
+  const Toggle = (
+    <div style={{ display: "inline-flex", background: "#FBF4EC", border: "1px solid " + LINE, borderRadius: 10, padding: 3, gap: 3 }}>
+      {[["account", "By account"], ["sector", "Whole portfolio"]].map(([id, lbl]) => (
+        <button key={id} onClick={() => setMode(id)} style={{
+          border: "none", cursor: "pointer", borderRadius: 8, padding: "7px 14px", fontFamily: FONT_BODY, fontSize: 13, fontWeight: 700,
+          background: mode === id ? "#fff" : "transparent", color: mode === id ? TEAL : "#7C8C8A",
+          boxShadow: mode === id ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+        }}>{lbl}</button>
+      ))}
+    </div>
+  );
+
   return (
-    <div style={{ marginTop: 20 }}>
-      <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr 1fr" : "repeat(4, 1fr)", gap: 12 }}>
-        {accts.map(a => {
-          const on = sel === a.id;
-          return (
-            <button key={a.id} onClick={() => setSel(on ? null : a.id)} style={{
-              textAlign: "left", cursor: "pointer", background: on ? "#F1FAF8" : "#fff",
-              border: "1px solid " + (on ? SOFT_TEAL : LINE), borderTop: "3px solid " + (on ? TEAL : "#D6E6E4"),
-              borderRadius: 14, padding: "14px 16px", fontFamily: FONT_BODY,
-            }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: "#7C8C8A", textTransform: "uppercase", letterSpacing: "0.04em" }}>{a.type}</div>
-              <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: narrow ? 15 : 16, color: INK, lineHeight: 1.15, margin: "3px 0" }}>{a.name}</div>
-              <div style={{ fontSize: 11.5, color: "#9B8E80" }}>{a.institution} · {a.mask}</div>
-              <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 700, fontSize: 20, color: TEAL, marginTop: 8 }}>{fmtK(a.balance)}</div>
-            </button>
-          );
-        })}
+    <div style={{ margin: "26px 0 36px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 18 }}>
+        {Toggle}
+        <span style={{ fontSize: 11.5, color: "#9B8E80", background: "#FBF4EC", border: "1px solid " + LINE, borderRadius: 20, padding: "4px 11px" }}>Snapshot pricing · live feed coming</span>
       </div>
 
-      {selAcct && (
-        <Card style={{ marginTop: 16, overflow: "hidden" }}>
-          <div style={{ padding: "16px 20px", borderBottom: "1px solid #F3ECE3", display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
-            <div>
-              <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, color: INK }}>{selAcct.name} <span style={{ fontSize: 13, color: "#9B8E80", fontWeight: 400 }}>{selAcct.mask}</span></div>
-              <div style={{ fontSize: 12, color: "#9B8E80" }}>Holdings as of {selAcct.as_of} · {fmt(selAcct.balance)}</div>
-            </div>
-            <span style={{ fontSize: 11, color: "#9B8E80", background: "#FBF4EC", border: "1px solid " + LINE, borderRadius: 20, padding: "3px 10px" }}>Snapshot pricing · live feed coming</span>
+      {mode === "account" && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr 1fr" : "repeat(4, 1fr)", gap: 12 }}>
+            {accts.map(a => {
+              const on = sel === a.id;
+              return (
+                <button key={a.id} onClick={() => setSel(on ? null : a.id)} style={{
+                  textAlign: "left", cursor: "pointer", background: on ? "#F1FAF8" : "#fff",
+                  border: "1px solid " + (on ? SOFT_TEAL : LINE), borderTop: "3px solid " + (on ? TEAL : "#D6E6E4"),
+                  borderRadius: 14, padding: "14px 16px", fontFamily: FONT_BODY,
+                }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#7C8C8A", textTransform: "uppercase", letterSpacing: "0.04em" }}>{a.type}</div>
+                  <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: narrow ? 15 : 16, color: INK, lineHeight: 1.15, margin: "3px 0" }}>{a.name}</div>
+                  <div style={{ fontSize: 11.5, color: "#9B8E80" }}>{a.institution} · {a.mask}</div>
+                  <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 700, fontSize: 20, color: TEAL, marginTop: 8 }}>{fmtK(a.balance)}</div>
+                </button>
+              );
+            })}
           </div>
-          {(holds[selAcct.id] || []).length > 0
-            ? <HoldingsTable holdings={holds[selAcct.id]} narrow={narrow} />
-            : <div style={{ padding: "24px 20px", color: "#9B8E80", fontSize: 13.5, fontFamily: FONT_BODY }}>This is a cash account — current balance {fmt(selAcct.balance)}, no securities held.</div>}
-        </Card>
+          {selAcct && (
+            <Card style={{ marginTop: 16, overflow: "hidden" }}>
+              <div style={{ padding: "16px 20px", borderBottom: "1px solid #F3ECE3" }}>
+                <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, color: INK }}>{selAcct.name} <span style={{ fontSize: 13, color: "#9B8E80", fontWeight: 400 }}>{selAcct.mask}</span></div>
+                <div style={{ fontSize: 12, color: "#9B8E80" }}>Holdings as of {selAcct.as_of} · {fmt(selAcct.balance)}</div>
+              </div>
+              {(holds[selAcct.id] || []).length > 0
+                ? <HoldingsTable holdings={holds[selAcct.id]} narrow={narrow} />
+                : <div style={{ padding: "24px 20px", color: "#9B8E80", fontSize: 13.5, fontFamily: FONT_BODY }}>This is a cash account — current balance {fmt(selAcct.balance)}, no securities held.</div>}
+            </Card>
+          )}
+        </>
+      )}
+
+      {mode === "sector" && (
+        <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "minmax(0,0.9fr) minmax(0,1.1fr)", gap: 20 }}>
+          <Card style={{ padding: 24 }}>
+            <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, marginBottom: 2 }}>Whole Portfolio by Sector</div>
+            <div style={{ fontSize: 12, color: "#9B8E80", marginBottom: 14 }}>{fmt(portTotal)} across {all.length} positions · all 4 accounts combined</div>
+            <div style={{ width: "100%", height: 260 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={sectorRows} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={58} outerRadius={104} paddingAngle={2} isAnimationActive={false}>
+                    {sectorRows.map(s => <Cell key={s.name} fill={secColor(s.name)} />)}
+                  </Pie>
+                  <Tooltip formatter={(v, n) => [fmt(v), n]} contentStyle={{ fontFamily: FONT_BODY, fontSize: 12.5 }} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          </Card>
+          <Card style={{ padding: 22 }}>
+            <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, marginBottom: 14 }}>Breakdown</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {sectorRows.map(s => {
+                const pct = portTotal ? (s.value / portTotal) * 100 : 0;
+                const open = openSector === s.name;
+                return (
+                  <div key={s.name}>
+                    <button onClick={() => setOpenSector(open ? null : s.name)} style={{ width: "100%", textAlign: "left", background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: FONT_BODY }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4, fontSize: 13.5 }}>
+                        <span style={{ fontWeight: 600, color: INK }}><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 3, background: secColor(s.name), marginRight: 7 }} />{s.name}</span>
+                        <span style={{ color: "#7C8C8A" }}>{fmtK(s.value)} <span style={{ fontSize: 11.5 }}>({pct.toFixed(1)}%)</span> <span style={{ color: "#C3B8AC", fontSize: 11 }}>{open ? "▲" : "▾"}</span></span>
+                      </div>
+                      <div style={{ height: 8, background: "#F3ECE3", borderRadius: 4 }}>
+                        <div style={{ height: 8, width: Math.max(1, pct) + "%", background: secColor(s.name), borderRadius: 4 }} />
+                      </div>
+                    </button>
+                    {open && (
+                      <div style={{ margin: "8px 0 4px", paddingLeft: 16 }}>
+                        {s.items.slice().sort((a, b) => (Number(b.market_value) || 0) - (Number(a.market_value) || 0)).map(h => (
+                          <div key={h.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "3px 0", color: "#5E6E6C", fontFamily: FONT_BODY }}>
+                            <span><strong style={{ color: INK }}>{h.symbol}</strong> <span style={{ color: "#9B8E80" }}>· {acctName(h.account_id)}</span></span>
+                            <span>{fmt(h.market_value)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+        </div>
       )}
     </div>
   );
