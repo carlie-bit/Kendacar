@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, createContext, useContext } from "react";
+import { useState, useMemo, useEffect, createContext, useContext, Fragment } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend, LineChart, Line, CartesianGrid, Area, AreaChart
@@ -1158,11 +1158,32 @@ function TickerHover({ h, color, align }) {
   );
 }
 
-// Holdings table for one account, with hover-for-detail on each ticker.
-function HoldingsTable({ holdings, narrow }) {
-  const th = { padding: "9px 12px", textAlign: "left", fontFamily: FONT_DISPLAY, fontSize: 10.5, letterSpacing: "0.06em", textTransform: "uppercase", color: "#7C8C8A", position: "sticky", top: 0, background: "#FFF8F2" };
+// One holding row, reused in the (sector-grouped) holdings table.
+function HoldingRow({ h, i, narrow }) {
   const td = { padding: "9px 12px", borderBottom: "1px solid #F3ECE3", fontFamily: FONT_BODY };
   const rt = { textAlign: "right" };
+  return (
+    <tr style={{ background: i % 2 === 0 ? "#fff" : "#FCF7F1" }}>
+      <td style={{ ...td, fontWeight: 700, color: INK, whiteSpace: "nowrap" }}><TickerHover h={h} /></td>
+      {!narrow && <td style={{ ...td, color: "#5E6E6C", maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{h.description}</td>}
+      <td style={{ ...td, ...rt, color: "#5E6E6C" }}>{h.qty != null ? Number(h.qty).toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—"}</td>
+      <td style={{ ...td, ...rt, color: "#5E6E6C" }}>{h.price != null ? fmt(h.price) : "—"}</td>
+      <td style={{ ...td, ...rt, fontWeight: 700, color: INK }}>{h.market_value != null ? fmt(h.market_value) : "—"}</td>
+      <td style={{ ...td, ...rt, fontWeight: 600, color: gainColor(h.gain) }}>{h.gain != null ? signed(h.gain) : "—"}{h.gain_pct != null && <span style={{ fontSize: 11, fontWeight: 500 }}> ({Number(h.gain_pct).toFixed(1)}%)</span>}</td>
+      <td style={{ ...td, ...rt, color: "#9B8E80" }}>{h.pct_account != null ? Number(h.pct_account).toFixed(1) + "%" : "—"}</td>
+    </tr>
+  );
+}
+
+// Holdings table for one account — grouped by sector, with hover-for-detail on each ticker.
+function HoldingsTable({ holdings, narrow }) {
+  const th = { padding: "9px 12px", textAlign: "left", fontFamily: FONT_DISPLAY, fontSize: 10.5, letterSpacing: "0.06em", textTransform: "uppercase", color: "#7C8C8A", position: "sticky", top: 0, background: "#FFF8F2" };
+  const total = holdings.reduce((s, h) => s + (Number(h.market_value) || 0), 0);
+  const bySec = {};
+  holdings.forEach(h => { const k = h.sector || "Other"; (bySec[k] = bySec[k] || { total: 0, items: [] }); bySec[k].total += Number(h.market_value) || 0; bySec[k].items.push(h); });
+  const groups = Object.entries(bySec).map(([name, v]) => ({ name, total: v.total, items: v.items })).sort((a, b) => b.total - a.total);
+  const colSpan = narrow ? 6 : 7;
+  let i = 0;
   return (
     <div style={{ overflowX: "auto" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: narrow ? 560 : "auto" }}>
@@ -1170,26 +1191,26 @@ function HoldingsTable({ holdings, narrow }) {
           <tr>
             <th style={th}>Ticker</th>
             {!narrow && <th style={th}>Name</th>}
-            <th style={{ ...th, ...rt }}>Qty</th>
-            <th style={{ ...th, ...rt }}>Price</th>
-            <th style={{ ...th, ...rt }}>Market Value</th>
-            <th style={{ ...th, ...rt }}>Gain / Loss</th>
-            <th style={{ ...th, ...rt }}>% Acct</th>
+            <th style={{ ...th, textAlign: "right" }}>Qty</th>
+            <th style={{ ...th, textAlign: "right" }}>Price</th>
+            <th style={{ ...th, textAlign: "right" }}>Market Value</th>
+            <th style={{ ...th, textAlign: "right" }}>Gain / Loss</th>
+            <th style={{ ...th, textAlign: "right" }}>% Acct</th>
           </tr>
         </thead>
         <tbody>
-          {holdings.map((h, i) => (
-            <tr key={h.id} style={{ background: i % 2 === 0 ? "#fff" : "#FCF7F1" }}>
-              <td style={{ ...td, fontWeight: 700, color: INK, whiteSpace: "nowrap" }}>
-                <TickerHover h={h} />
-              </td>
-              {!narrow && <td style={{ ...td, color: "#5E6E6C", maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{h.description}</td>}
-              <td style={{ ...td, ...rt, color: "#5E6E6C" }}>{h.qty != null ? Number(h.qty).toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—"}</td>
-              <td style={{ ...td, ...rt, color: "#5E6E6C" }}>{h.price != null ? fmt(h.price) : "—"}</td>
-              <td style={{ ...td, ...rt, fontWeight: 700, color: INK }}>{h.market_value != null ? fmt(h.market_value) : "—"}</td>
-              <td style={{ ...td, ...rt, fontWeight: 600, color: gainColor(h.gain) }}>{h.gain != null ? signed(h.gain) : "—"}{h.gain_pct != null && <span style={{ fontSize: 11, fontWeight: 500 }}> ({Number(h.gain_pct).toFixed(1)}%)</span>}</td>
-              <td style={{ ...td, ...rt, color: "#9B8E80" }}>{h.pct_account != null ? Number(h.pct_account).toFixed(1) + "%" : "—"}</td>
-            </tr>
+          {groups.map(g => (
+            <Fragment key={g.name}>
+              <tr>
+                <td colSpan={colSpan} style={{ padding: "8px 12px", background: "#FBF4EC", borderBottom: "1px solid #EFE7DD" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontFamily: FONT_BODY }}>
+                    <span style={{ fontWeight: 700, color: INK, fontSize: 12.5 }}><span style={{ display: "inline-block", width: 9, height: 9, borderRadius: 3, background: secColor(g.name), marginRight: 7 }} />{g.name}</span>
+                    <span style={{ color: "#7C8C8A", fontSize: 12 }}>{fmt(g.total)} · {total ? ((g.total / total) * 100).toFixed(1) : 0}%</span>
+                  </div>
+                </td>
+              </tr>
+              {g.items.map(h => <HoldingRow key={h.id} h={h} i={i++} narrow={narrow} />)}
+            </Fragment>
           ))}
         </tbody>
       </table>
