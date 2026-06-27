@@ -559,6 +559,7 @@ const useData = () => useContext(DataContext);
 
 const GRANT_REQUEST_URL = "";   // e.g. "https://forms.gle/xxxxxxxx"
 const CONTRIBUTION_URL  = "";   // e.g. "https://forms.gle/yyyyyyyy"
+const DRIVE_URL = "https://drive.google.com/drive/u/0/folders/1CP4Dpt0hDsw2n-3JYW_F8rVo42Nu6aYH";
 
 // =============================================================================
 //  CONSTANTS & HELPERS
@@ -930,7 +931,7 @@ function NavBar({ view, setView, narrow }) {
         <button onClick={() => setView("pulse")} style={{ background: "none", border: "none", cursor: "pointer", padding: "12px 0", display: "flex", alignItems: "center" }}>
           <Wordmark size={21} light sub={false} />
         </button>
-        <div style={{ display: "flex", gap: narrow ? 2 : 6, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: narrow ? 2 : 6, flexWrap: "wrap", alignItems: "center" }}>
           {items.map(it => (
             <button key={it.id} onClick={() => setView(it.id)} style={{
               background: active === it.id ? "rgba(255,255,255,0.16)" : "none",
@@ -939,6 +940,14 @@ function NavBar({ view, setView, narrow }) {
               fontSize: 13, padding: narrow ? "10px 9px" : "10px 14px", borderRadius: 6, cursor: "pointer",
             }}>{it.label}</button>
           ))}
+          <a href={DRIVE_URL} target="_blank" rel="noopener noreferrer" title="Open the Kendacar Google Drive" style={{
+            display: "inline-flex", alignItems: "center", gap: 5, textDecoration: "none",
+            color: "#BFE0DE", fontFamily: "'Nunito Sans', sans-serif", fontWeight: 400,
+            fontSize: 13, padding: narrow ? "10px 9px" : "10px 14px", borderRadius: 6,
+          }}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+            Drive
+          </a>
         </div>
       </div>
     </div>
