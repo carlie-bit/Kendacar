@@ -1122,10 +1122,135 @@ function InvestmentEditor({ investments, onDone }) {
 }
 function narrow720() { return typeof window !== "undefined" && window.innerWidth < 720; }
 
+// Gain/loss coloring + formatting helpers for holdings.
+const gainColor = v => v == null ? "#7C8C8A" : Number(v) >= 0 ? "#1F7A52" : "#B5451B";
+const signed = v => (Number(v) >= 0 ? "+" : "") + fmt(Math.abs(Number(v)) * (Number(v) < 0 ? -1 : 1));
+
+// Holdings table for one account, with hover-for-detail on each ticker.
+function HoldingsTable({ holdings, narrow }) {
+  const [hover, setHover] = useState(null); // index of hovered row
+  const th = { padding: "9px 12px", textAlign: "left", fontFamily: FONT_DISPLAY, fontSize: 10.5, letterSpacing: "0.06em", textTransform: "uppercase", color: "#7C8C8A", position: "sticky", top: 0, background: "#FFF8F2" };
+  const td = { padding: "9px 12px", borderBottom: "1px solid #F3ECE3", fontFamily: FONT_BODY };
+  const rt = { textAlign: "right" };
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: narrow ? 560 : "auto" }}>
+        <thead>
+          <tr>
+            <th style={th}>Ticker</th>
+            {!narrow && <th style={th}>Name</th>}
+            <th style={{ ...th, ...rt }}>Qty</th>
+            <th style={{ ...th, ...rt }}>Price</th>
+            <th style={{ ...th, ...rt }}>Market Value</th>
+            <th style={{ ...th, ...rt }}>Gain / Loss</th>
+            <th style={{ ...th, ...rt }}>% Acct</th>
+          </tr>
+        </thead>
+        <tbody>
+          {holdings.map((h, i) => (
+            <tr key={h.id} style={{ background: i % 2 === 0 ? "#fff" : "#FCF7F1" }}>
+              <td style={{ ...td, position: "relative", fontWeight: 700, color: INK, whiteSpace: "nowrap" }}>
+                <span onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)} style={{ cursor: "default", borderBottom: "1px dotted #B7C4C3" }}>{h.symbol}</span>
+                {hover === i && (
+                  <div style={{ position: "absolute", zIndex: 30, top: "100%", left: 0, marginTop: 6, width: 270, background: "#fff", border: "1px solid " + LINE, borderRadius: 12, boxShadow: "0 8px 24px rgba(0,0,0,0.14)", padding: "13px 15px", whiteSpace: "normal", fontWeight: 400 }}>
+                    <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 14, color: INK }}>{h.symbol}</div>
+                    <div style={{ fontSize: 12, color: "#7C8C8A", marginBottom: 8 }}>{h.description}</div>
+                    {[["Quantity", h.qty != null ? Number(h.qty).toLocaleString() : "—"],
+                      ["Price", h.price != null ? fmt(h.price) : "—"],
+                      ["Market value", h.market_value != null ? fmt(h.market_value) : "—"],
+                      ["Cost basis", h.cost_basis != null ? fmt(h.cost_basis) : "—"],
+                      ["Gain / loss", h.gain != null ? signed(h.gain) + (h.gain_pct != null ? " (" + Number(h.gain_pct).toFixed(1) + "%)" : "") : "—"],
+                      ["Asset type", h.asset_type || "—"]].map(([k, v]) => (
+                      <div key={k} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "2px 0", color: k === "Gain / loss" ? gainColor(h.gain) : "#5E6E6C" }}>
+                        <span style={{ color: "#9B8E80" }}>{k}</span><span style={{ fontWeight: 600 }}>{v}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </td>
+              {!narrow && <td style={{ ...td, color: "#5E6E6C", maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{h.description}</td>}
+              <td style={{ ...td, ...rt, color: "#5E6E6C" }}>{h.qty != null ? Number(h.qty).toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—"}</td>
+              <td style={{ ...td, ...rt, color: "#5E6E6C" }}>{h.price != null ? fmt(h.price) : "—"}</td>
+              <td style={{ ...td, ...rt, fontWeight: 700, color: INK }}>{h.market_value != null ? fmt(h.market_value) : "—"}</td>
+              <td style={{ ...td, ...rt, fontWeight: 600, color: gainColor(h.gain) }}>{h.gain != null ? signed(h.gain) : "—"}{h.gain_pct != null && <span style={{ fontSize: 11, fontWeight: 500 }}> ({Number(h.gain_pct).toFixed(1)}%)</span>}</td>
+              <td style={{ ...td, ...rt, color: "#9B8E80" }}>{h.pct_account != null ? Number(h.pct_account).toFixed(1) + "%" : "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// Admin-only account drill-down: tiles per account -> click -> holdings with as-of + hover.
+function AccountsDrilldown({ narrow }) {
+  const { session, setSession } = useAuth();
+  const [accts, setAccts] = useState(null);
+  const [holds, setHolds] = useState({});
+  const [sel, setSel] = useState(null);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const a = await authedGet(session, setSession, "accounts?select=*&order=sort_order");
+        const h = await authedGet(session, setSession, "holdings?select=*&order=account_id,sort_order");
+        if (!live) return;
+        const byA = {}; h.forEach(x => { (byA[x.account_id] = byA[x.account_id] || []).push(x); });
+        setHolds(byA); setAccts(a);
+      } catch (e) { if (live) setErr(e.message); }
+    })();
+    return () => { live = false; };
+  }, []);
+
+  if (err) return <Card style={{ padding: 20, marginTop: 18, color: "#B5451B", fontSize: 13 }}>Couldn&rsquo;t load accounts: {err}</Card>;
+  if (!accts) return <Card style={{ padding: 20, marginTop: 18, color: "#9B8E80", fontSize: 13 }}>Loading accounts…</Card>;
+
+  const selAcct = accts.find(a => a.id === sel);
+  return (
+    <div style={{ marginTop: 20 }}>
+      <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr 1fr" : "repeat(4, 1fr)", gap: 12 }}>
+        {accts.map(a => {
+          const on = sel === a.id;
+          return (
+            <button key={a.id} onClick={() => setSel(on ? null : a.id)} style={{
+              textAlign: "left", cursor: "pointer", background: on ? "#F1FAF8" : "#fff",
+              border: "1px solid " + (on ? SOFT_TEAL : LINE), borderTop: "3px solid " + (on ? TEAL : "#D6E6E4"),
+              borderRadius: 14, padding: "14px 16px", fontFamily: FONT_BODY,
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#7C8C8A", textTransform: "uppercase", letterSpacing: "0.04em" }}>{a.type}</div>
+              <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: narrow ? 15 : 16, color: INK, lineHeight: 1.15, margin: "3px 0" }}>{a.name}</div>
+              <div style={{ fontSize: 11.5, color: "#9B8E80" }}>{a.institution} · {a.mask}</div>
+              <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 700, fontSize: 20, color: TEAL, marginTop: 8 }}>{fmtK(a.balance)}</div>
+            </button>
+          );
+        })}
+      </div>
+
+      {selAcct && (
+        <Card style={{ marginTop: 16, overflow: "hidden" }}>
+          <div style={{ padding: "16px 20px", borderBottom: "1px solid #F3ECE3", display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+            <div>
+              <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, color: INK }}>{selAcct.name} <span style={{ fontSize: 13, color: "#9B8E80", fontWeight: 400 }}>{selAcct.mask}</span></div>
+              <div style={{ fontSize: 12, color: "#9B8E80" }}>Holdings as of {selAcct.as_of} · {fmt(selAcct.balance)}</div>
+            </div>
+            <span style={{ fontSize: 11, color: "#9B8E80", background: "#FBF4EC", border: "1px solid " + LINE, borderRadius: 20, padding: "3px 10px" }}>Snapshot pricing · live feed coming</span>
+          </div>
+          {(holds[selAcct.id] || []).length > 0
+            ? <HoldingsTable holdings={holds[selAcct.id]} narrow={narrow} />
+            : <div style={{ padding: "24px 20px", color: "#9B8E80", fontSize: 13.5, fontFamily: FONT_BODY }}>This is a cash account — current balance {fmt(selAcct.balance)}, no securities held.</div>}
+        </Card>
+      )}
+    </div>
+  );
+}
+
 function InvestmentsView({ narrow }) {
   const { investments } = useData();
   const { signedIn } = useAuth();
   const [editing, setEditing] = useState(false);
+  const [showAccts, setShowAccts] = useState(false);
   const data = investments.composition;
   const corpus = corpusTotal(investments);
   const classColor = { "Equities": TEAL, "Fixed Income": "#3A6B9C", "Cash": SUN, "Managed Investments (Schwab)": TEAL };
@@ -1142,9 +1267,19 @@ function InvestmentsView({ narrow }) {
 
       <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "repeat(3, 1fr)", gap: 16, marginBottom: 24 }}>
         <StatCard label="Total Corpus" value={fmtK(corpus)} sub={"as of " + investments.asOf} accent={TEAL} />
-        <StatCard label="Accounts" value={investments.accounts || "—"} sub="managed & brokerage" accent={CORAL} />
+        {signedIn ? (
+          <button onClick={() => setShowAccts(s => !s)} style={{ textAlign: "left", cursor: "pointer", background: showAccts ? "#FFF3EC" : "#fff", border: "1px solid " + (showAccts ? CORAL : "#EFE7DD"), borderTop: "3px solid " + CORAL, borderRadius: 18, padding: "20px 24px" }}>
+            <div style={{ fontSize: 11, fontFamily: FONT_BODY, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "#7C8C8A", marginBottom: 6 }}>Accounts</div>
+            <div style={{ fontSize: 30, fontWeight: 600, color: "#1F3A38", fontFamily: FONT_DISPLAY, lineHeight: 1 }}>{investments.accounts || "—"}</div>
+            <div style={{ fontSize: 12, color: CORAL, marginTop: 4, fontFamily: FONT_BODY, fontWeight: 700 }}>{showAccts ? "Hide detail ▲" : "View accounts & holdings ▾"}</div>
+          </button>
+        ) : (
+          <StatCard label="Accounts" value={investments.accounts || "—"} sub="managed & brokerage" accent={CORAL} />
+        )}
         <StatCard label="Asset Classes" value={data.length} sub="equities, fixed income, cash" accent={SUN} />
       </div>
+
+      {signedIn && showAccts && <AccountsDrilldown narrow={narrow} />}
 
       <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "minmax(0,1fr) minmax(0,1fr)", gap: 20 }}>
         <Card style={{ padding: 24 }}>
@@ -1180,7 +1315,7 @@ function InvestmentsView({ narrow }) {
             })}
           </div>
           <div style={{ marginTop: 24, paddingTop: 18, borderTop: "1px solid " + LINE, fontSize: 12, color: "#9B8E80", lineHeight: 1.55 }}>
-            By asset class, as of {investments.asOf}. Account-level statements and individual holdings stay private in Addepar — this page shows allocation only.
+            By asset class, as of {investments.asOf}. Public visitors see allocation only — account-level holdings open privately for signed-in family via the Accounts tile above.
           </div>
         </Card>
       </div>
