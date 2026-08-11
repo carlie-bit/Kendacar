@@ -16,6 +16,7 @@ const SUPABASE_URL = "https://kdmtjvbgeqcjipdnfwty.supabase.co";
 const SUPABASE_KEY = "sb_publishable_tWKd0z8dbr2cAfExI11pPw_7ACCfjqa";
 const REST = SUPABASE_URL + "/rest/v1/";
 const AUTH = SUPABASE_URL + "/auth/v1/";
+const FUNCTIONS = SUPABASE_URL + "/functions/v1/";
 const SESSION_KEY = "kendacar_session";
 
 // ---- read (uses the public key) ----
@@ -118,6 +119,18 @@ async function authedGet(session, setSession, path) {
     if (r) { setSession(r); saveSession(r); res = await doReq(r.access_token); }
   }
   if (!res.ok) throw new Error("Load failed (" + res.status + ").");
+  return res.json();
+}
+
+// Live quotes via the secure edge proxy (signed-in only). Returns { SYMBOL: {c, dp} }.
+async function fetchQuotes(session, symbols) {
+  if (!session || !symbols || !symbols.length) return { prices: {}, at: null };
+  const res = await fetch(FUNCTIONS + "quotes", {
+    method: "POST",
+    headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + session.access_token, "Content-Type": "application/json" },
+    body: JSON.stringify({ symbols }),
+  });
+  if (!res.ok) throw new Error("quotes " + res.status);
   return res.json();
 }
 
@@ -778,6 +791,7 @@ function GrantEditRow({ row, onDone, narrow }) {
   const [org, setOrg] = useState(row?.org ?? "");
   const [amount, setAmount] = useState(row?.amount ?? "");
   const [category, setCategory] = useState(row?.category ?? CATEGORY_LIST[0]);
+  const [checkDate, setCheckDate] = useState(row?.checkDate ?? "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -786,7 +800,7 @@ function GrantEditRow({ row, onDone, narrow }) {
       setErr("Year, organization and a numeric amount are required."); return;
     }
     setBusy(true); setErr("");
-    const payload = { year: Number(year), org: org.trim(), amount: Number(amount), category };
+    const payload = { year: Number(year), org: org.trim(), amount: Number(amount), category, check_date: checkDate || null };
     try {
       if (row?.id != null) await authedWrite(session, setSession, "PATCH", "grants?id=eq." + row.id, payload);
       else await authedWrite(session, setSession, "POST", "grants", payload);
@@ -806,6 +820,7 @@ function GrantEditRow({ row, onDone, narrow }) {
       <td style={{ padding: "8px 12px" }}><EdInput value={org} onChange={setOrg} placeholder="Organization" /></td>
       <td style={{ padding: "8px 12px" }}><EdSelect value={category} onChange={setCategory} options={CATEGORY_LIST} /></td>
       <td style={{ padding: "8px 12px" }}><EdInput type="number" value={amount} onChange={setAmount} placeholder="Amount" /></td>
+      <td style={{ padding: "8px 12px" }}><EdInput type="date" value={checkDate} onChange={setCheckDate} /></td>
       <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           <MiniButton kind="save" onClick={save} disabled={busy}>{busy ? "…" : "Save"}</MiniButton>
@@ -1236,6 +1251,10 @@ function AccountsDrilldown({ narrow }) {
   const [mode, setMode] = useState("account"); // "account" | "sector"
   const [openSector, setOpenSector] = useState(null);
   const [err, setErr] = useState("");
+  const [quotes, setQuotes] = useState({});
+  const [quotedAt, setQuotedAt] = useState(null);
+  const [pricing, setPricing] = useState(false);
+  const [priceErr, setPriceErr] = useState("");
 
   useEffect(() => {
     let live = true;
@@ -1251,22 +1270,57 @@ function AccountsDrilldown({ narrow }) {
     return () => { live = false; };
   }, []);
 
+  async function refreshPrices(list) {
+    const syms = (list || all).map(h => h.symbol).filter(Boolean);
+    if (!syms.length) return;
+    setPricing(true); setPriceErr("");
+    try { const res = await fetchQuotes(session, syms); setQuotes(res.prices || {}); setQuotedAt(res.at || new Date().toISOString()); }
+    catch (e) { setPriceErr("Live prices unavailable right now — showing last snapshot."); }
+    finally { setPricing(false); }
+  }
+  useEffect(() => { if (all.length) refreshPrices(all); /* eslint-disable-next-line */ }, [all.length]);
+
   if (err) return <Card style={{ padding: 20, marginTop: 18, color: "#B5451B", fontSize: 13 }}>Couldn&rsquo;t load accounts: {err}</Card>;
   if (!accts) return <Card style={{ padding: 20, marginTop: 18, color: "#9B8E80", fontSize: 13 }}>Loading accounts…</Card>;
 
+  // Overlay live quotes onto each holding (recompute value + gain); others keep snapshot.
+  const applyLive = h => {
+    const q = quotes[(h.symbol || "").toUpperCase()];
+    if (!q || !q.c || h.qty == null) return h;
+    const price = Number(q.c);
+    const mv = Number(h.qty) * price;
+    const cost = h.cost_basis != null ? Number(h.cost_basis) : null;
+    const gain = cost != null ? mv - cost : h.gain;
+    const gain_pct = cost ? (gain / cost) * 100 : h.gain_pct;
+    return { ...h, price, market_value: mv, gain, gain_pct, _live: true };
+  };
+  const allLive = all.map(applyLive);
+  const holdsLive = {}; allLive.forEach(h => { (holdsLive[h.account_id] = holdsLive[h.account_id] || []).push(h); });
+  const liveBalance = a => { const hs = holdsLive[a.id]; return hs && hs.length ? hs.reduce((s, h) => s + (Number(h.market_value) || 0), 0) : a.balance; };
+
   const selAcct = accts.find(a => a.id === sel);
   const acctName = id => { const a = accts.find(x => x.id === id); return a ? a.mask : id; };
-  const portTotal = all.reduce((s, h) => s + (Number(h.market_value) || 0), 0);
+  const portTotal = allLive.reduce((s, h) => s + (Number(h.market_value) || 0), 0);
+  const liveCount = Object.keys(quotes).length;
 
-  // Sector aggregation across all accounts.
+  // Sector aggregation across all accounts (live-adjusted).
   const bySector = {};
-  all.forEach(h => {
+  allLive.forEach(h => {
     const k = h.sector || "Other";
     (bySector[k] = bySector[k] || { total: 0, items: [] });
     bySector[k].total += Number(h.market_value) || 0;
     bySector[k].items.push(h);
   });
   const sectorRows = Object.entries(bySector).map(([name, v]) => ({ name, value: v.total, items: v.items })).sort((a, b) => b.value - a.value);
+
+  const priceBadge = (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 11.5, color: "#5E6E6C", fontFamily: FONT_BODY }}>
+      {liveCount > 0 && !priceErr
+        ? <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "#EAF7F2", border: "1px solid #BFE0DE", color: "#0E7A5F", borderRadius: 20, padding: "4px 10px", fontWeight: 700 }}><span style={{ width: 7, height: 7, borderRadius: "50%", background: "#1F9E6E", display: "inline-block" }} />Live · {liveCount} priced{quotedAt ? " · " + new Date(quotedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : ""}</span>
+        : <span style={{ background: "#FBF4EC", border: "1px solid " + LINE, borderRadius: 20, padding: "4px 10px" }}>{pricing ? "Fetching live prices…" : (priceErr || "Snapshot pricing")}</span>}
+      <button onClick={() => refreshPrices(all)} disabled={pricing} style={{ background: "none", border: "1px solid " + LINE, borderRadius: 8, padding: "4px 10px", cursor: pricing ? "default" : "pointer", color: TEAL, fontWeight: 700, fontSize: 11.5, fontFamily: FONT_BODY }}>{pricing ? "…" : "Refresh"}</button>
+    </span>
+  );
 
   const Toggle = (
     <div style={{ display: "inline-flex", background: "#FBF4EC", border: "1px solid " + LINE, borderRadius: 10, padding: 3, gap: 3 }}>
@@ -1284,7 +1338,7 @@ function AccountsDrilldown({ narrow }) {
     <div style={{ margin: "26px 0 36px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 18 }}>
         {Toggle}
-        <span style={{ fontSize: 11.5, color: "#9B8E80", background: "#FBF4EC", border: "1px solid " + LINE, borderRadius: 20, padding: "4px 11px" }}>Snapshot pricing · live feed coming</span>
+        {priceBadge}
       </div>
 
       {mode === "account" && (
@@ -1301,7 +1355,7 @@ function AccountsDrilldown({ narrow }) {
                   <div style={{ fontSize: 11, fontWeight: 700, color: "#7C8C8A", textTransform: "uppercase", letterSpacing: "0.04em" }}>{a.type}</div>
                   <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: narrow ? 15 : 16, color: INK, lineHeight: 1.15, margin: "3px 0" }}>{a.name}</div>
                   <div style={{ fontSize: 11.5, color: "#9B8E80" }}>{a.institution} · {a.mask}</div>
-                  <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 700, fontSize: 20, color: TEAL, marginTop: 8 }}>{fmtK(a.balance)}</div>
+                  <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 700, fontSize: 20, color: TEAL, marginTop: 8 }}>{fmtK(liveBalance(a))}</div>
                 </button>
               );
             })}
@@ -1310,10 +1364,10 @@ function AccountsDrilldown({ narrow }) {
             <Card style={{ marginTop: 16, overflow: "hidden" }}>
               <div style={{ padding: "16px 20px", borderBottom: "1px solid #F3ECE3" }}>
                 <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, color: INK }}>{selAcct.name} <span style={{ fontSize: 13, color: "#9B8E80", fontWeight: 400 }}>{selAcct.mask}</span></div>
-                <div style={{ fontSize: 12, color: "#9B8E80" }}>Holdings as of {selAcct.as_of} · {fmt(selAcct.balance)}</div>
+                <div style={{ fontSize: 12, color: "#9B8E80" }}>{fmt(liveBalance(selAcct))} · {liveCount > 0 ? "live prices where available, else " : ""}snapshot {selAcct.as_of}</div>
               </div>
-              {(holds[selAcct.id] || []).length > 0
-                ? <HoldingsTable holdings={holds[selAcct.id]} narrow={narrow} />
+              {(holdsLive[selAcct.id] || []).length > 0
+                ? <HoldingsTable holdings={holdsLive[selAcct.id]} narrow={narrow} />
                 : <div style={{ padding: "24px 20px", color: "#9B8E80", fontSize: 13.5, fontFamily: FONT_BODY }}>This is a cash account — current balance {fmt(selAcct.balance)}, no securities held.</div>}
             </Card>
           )}
@@ -1551,14 +1605,14 @@ function GrantsView({ narrow }) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: signedIn ? 640 : 520 }}>
               <thead>
                 <tr style={{ background: "#FFF8F2", borderBottom: "1px solid #EFE7DD" }}>
-                  {["Year", "Organization", "Category", "Amount"].concat(signedIn ? ["Edit"] : []).map(h => (
+                  {["Year", "Organization", "Category", "Amount", "Check Date"].concat(signedIn ? ["Edit"] : []).map(h => (
                     <th key={h} style={{ padding: "12px 16px", textAlign: "left", fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#7C8C8A", whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {signedIn && editId === "new" && <GrantEditRow row={null} onDone={() => setEditId(null)} narrow={narrow} />}
-                {filtered.length === 0 && <tr><td colSpan={signedIn ? 5 : 4} style={{ padding: 32, textAlign: "center", color: "#7C8C8A" }}>No grants match your filters.</td></tr>}
+                {filtered.length === 0 && <tr><td colSpan={signedIn ? 6 : 5} style={{ padding: 32, textAlign: "center", color: "#7C8C8A" }}>No grants match your filters.</td></tr>}
                 {filtered.slice().sort((a, b) => b.year - a.year || b.amount - a.amount).map((g, i) => (
                   editId === g.id && g.id != null ? (
                     <GrantEditRow key={"edit" + g.id} row={g} onDone={() => setEditId(null)} narrow={narrow} />
@@ -1570,6 +1624,7 @@ function GrantsView({ narrow }) {
                       <span style={{ background: (CAT_COLORS[g.category] || "#999") + "18", color: CAT_COLORS[g.category] || "#999", borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" }}>{g.category}</span>
                     </td>
                     <td style={{ padding: "11px 16px", fontWeight: 700, color: TEAL, whiteSpace: "nowrap" }}>{fmt(g.amount)}</td>
+                    <td style={{ padding: "11px 16px", color: "#7C8C8A", whiteSpace: "nowrap" }}>{g.checkDate ? fmtCheckDate(g.checkDate) : <span style={{ color: "#C8BBA8" }}>—</span>}</td>
                     {signedIn && (
                       <td style={{ padding: "11px 16px" }}>
                         {g.id != null
