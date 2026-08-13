@@ -970,6 +970,14 @@ function NavBar({ view, setView, narrow, signedIn, pending }) {
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
             Drive
           </a>
+          {/* Signed-out trustees need a visible way in — the only other sign-in is 11px text in the footer. */}
+          {!signedIn && (
+            <button onClick={() => setView("queue")} style={{
+              background: "rgba(255,255,255,0.14)", border: "1px solid rgba(255,255,255,0.35)", color: "#fff",
+              fontFamily: "'Nunito Sans', sans-serif", fontWeight: 600, fontSize: 13,
+              padding: narrow ? "8px 12px" : "8px 16px", borderRadius: 6, cursor: "pointer", marginLeft: narrow ? 2 : 6,
+            }}>Sign in</button>
+          )}
         </div>
       </div>
     </div>
@@ -2982,8 +2990,8 @@ export default function App() {
           {view === "queue"          && (auth.signedIn
             ? <ProcessingQueue narrow={narrow} setView={nav} onChange={() => refreshPending(session)} />
             : <div style={{ maxWidth: 560, margin: "0 auto", padding: narrow ? "40px 16px" : "60px 40px", textAlign: "center" }}>
-                <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 24, color: INK, marginBottom: 8 }}>Sign in to review submissions</div>
-                <div style={{ fontSize: 14, color: "#7C8C8A", fontFamily: FONT_BODY, marginBottom: 18 }}>Grant recommendations are private to the family. Sign in with your email to see and process them.</div>
+                <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 24, color: INK, marginBottom: 8 }}>Sign in</div>
+                <div style={{ fontSize: 14, color: "#7C8C8A", fontFamily: FONT_BODY, marginBottom: 18 }}>Grant recommendations and editing are private to the family. Enter your email and we&rsquo;ll send you a sign-in link.</div>
                 <SignInControl />
               </div>)}
 
