@@ -880,9 +880,10 @@ function DonationEditRow({ row, onDone }) {
 }
 
 // Footer sign-in / sign-out control.
-function SignInControl() {
+function SignInControl({ startOpen }) {
   const { signedIn, email, signOut, startSignIn } = useAuth();
-  const [open, setOpen] = useState(false);
+  // On the dedicated sign-in page the email box shows straight away; in the footer it stays tucked behind a link.
+  const [open, setOpen] = useState(!!startOpen);
   const [addr, setAddr] = useState("");
   const [state, setState] = useState("idle"); // idle | sending | sent | error
   const [msg, setMsg] = useState("");
@@ -2992,7 +2993,7 @@ export default function App() {
             : <div style={{ maxWidth: 560, margin: "0 auto", padding: narrow ? "40px 16px" : "60px 40px", textAlign: "center" }}>
                 <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 24, color: INK, marginBottom: 8 }}>Sign in</div>
                 <div style={{ fontSize: 14, color: "#7C8C8A", fontFamily: FONT_BODY, marginBottom: 18 }}>Grant recommendations and editing are private to the family. Enter your email and we&rsquo;ll send you a sign-in link.</div>
-                <SignInControl />
+                <SignInControl startOpen />
               </div>)}
 
           <div style={{ padding: "32px 20px", textAlign: "center", fontSize: 11, color: "#7C8C8A", fontFamily: "'Fredoka', serif", letterSpacing: "0.08em" }}>
