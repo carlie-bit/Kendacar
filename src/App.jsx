@@ -931,7 +931,7 @@ function SignInControl() {
 //  NAV BAR
 // =============================================================================
 
-function NavBar({ view, setView, narrow }) {
+function NavBar({ view, setView, narrow, signedIn, pending }) {
   const items = [
     { id: "pulse",         label: "Pulse" },
     { id: "investments",   label: "Investments" },
@@ -939,6 +939,8 @@ function NavBar({ view, setView, narrow }) {
     { id: "contributions", label: "Contributions" },
     { id: "grantees",      label: "Grantees" },
   ];
+  // Trustees get the submissions queue as a first-class tab, with a count of what's waiting.
+  if (signedIn) items.push({ id: "queue", label: "Review", badge: pending });
   const active = view === "grantee-detail" ? "grantees" : view;
   return (
     <div style={{ background: TEAL, color: "#fff", position: "sticky", top: 0, zIndex: 50, boxShadow: "0 2px 8px rgba(0,0,0,0.12)" }}>
@@ -953,7 +955,12 @@ function NavBar({ view, setView, narrow }) {
               border: "none", color: active === it.id ? "#fff" : "#BFE0DE",
               fontFamily: "'Nunito Sans', sans-serif", fontWeight: active === it.id ? 600 : 400,
               fontSize: 13, padding: narrow ? "10px 9px" : "10px 14px", borderRadius: 6, cursor: "pointer",
-            }}>{it.label}</button>
+            }}>
+              {it.label}
+              {it.badge > 0 && (
+                <span style={{ background: CORAL, color: "#fff", borderRadius: 20, padding: "1px 7px", fontSize: 10.5, fontWeight: 800, marginLeft: 6 }}>{it.badge}</span>
+              )}
+            </button>
           ))}
           <a href={DRIVE_URL} target="_blank" rel="noopener noreferrer" title="Open the Kendacar Google Drive" style={{
             display: "inline-flex", alignItems: "center", gap: 5, textDecoration: "none",
@@ -2782,10 +2789,12 @@ function ProcessingQueue({ narrow, setView, onChange }) {
   const [items, setItems] = useState(null);
   const [err, setErr] = useState("");
   const [openId, setOpenId] = useState(null);
+  const [tab, setTab] = useState("new");
 
   async function load() {
     try {
-      setItems(await authedGet(session, setSession, "grant_requests?status=eq.new&order=created_at.desc&select=id,org,amount,requested_by,requester_email,category,notes,created_at"));
+      // Pull every submission, not just the waiting ones — the processed history lives here too.
+      setItems(await authedGet(session, setSession, "grant_requests?order=created_at.desc&select=id,org,amount,requested_by,requester_email,category,notes,created_at,status,check_number,check_date,processed_at"));
       onChange && onChange();
     } catch (e) { setErr(e.message); }
   }
@@ -2798,20 +2807,47 @@ function ProcessingQueue({ narrow, setView, onChange }) {
   }
   const after = () => { setOpenId(null); load(); };
 
+  const all = items || [];
+  const counts = { new: 0, sent: 0, declined: 0 };
+  all.forEach(r => { if (counts[r.status] != null) counts[r.status]++; });
+  const TABS = [
+    { id: "new",      label: "Waiting" },
+    { id: "sent",     label: "Sent" },
+    { id: "declined", label: "Declined" },
+  ];
+  const shown = all.filter(r => r.status === tab);
+  const EMPTY = {
+    new: "Nothing waiting — you're all caught up. 🎉",
+    sent: "No submissions have been processed yet.",
+    declined: "Nothing has been declined.",
+  };
+
   return (
     <div style={{ maxWidth: 880, margin: "0 auto", padding: narrow ? "28px 16px" : "36px 40px" }}>
       <button onClick={() => setView("pulse")} style={{ background: "none", border: "none", color: TEAL, cursor: "pointer", fontSize: 13, fontWeight: 700, marginBottom: 16, fontFamily: FONT_BODY }}>&larr; Back to dashboard</button>
-      <SectionTitle title="Grant recommendations to process" sub="Family submissions waiting to be sent. Confirm one and it posts to the dashboard automatically." />
+      <SectionTitle title="Grant recommendations" sub="Family submissions and what happened to each one. Confirm one and it posts to the dashboard automatically." />
 
       {err && <div style={{ color: "#B5451B", fontSize: 13, marginBottom: 12 }}>{err}</div>}
       {items === null && !err && <div style={{ color: "#7C8C8A", fontFamily: FONT_BODY }}>Loading…</div>}
-      {items && items.length === 0 && (
-        <Card style={{ padding: "30px 24px", textAlign: "center", color: "#9B8E80", fontFamily: FONT_BODY }}>Nothing waiting — you're all caught up. 🎉</Card>
+
+      {/* Status tabs — the processed history is here, not just what's waiting. */}
+      <div style={{ display: "flex", gap: 2, marginBottom: 20, borderBottom: "2px solid #EFE7DD" }}>
+        {TABS.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)} style={{
+            background: "none", border: "none", borderBottom: tab === t.id ? "2px solid " + TEAL : "2px solid transparent",
+            marginBottom: -2, padding: "10px 18px", fontSize: 13, fontFamily: FONT_BODY,
+            fontWeight: tab === t.id ? 600 : 400, color: tab === t.id ? TEAL : "#7C8C8A", cursor: "pointer",
+          }}>{t.label} ({counts[t.id]})</button>
+        ))}
+      </div>
+
+      {items && shown.length === 0 && (
+        <Card style={{ padding: "30px 24px", textAlign: "center", color: "#9B8E80", fontFamily: FONT_BODY }}>{EMPTY[tab]}</Card>
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-        {(items || []).map(r => (
-          <Card key={r.id} style={{ padding: narrow ? "18px" : "20px 24px", borderLeft: "4px solid " + CORAL }}>
+        {shown.map(r => (
+          <Card key={r.id} style={{ padding: narrow ? "18px" : "20px 24px", borderLeft: "4px solid " + (r.status === "sent" ? "#1F9E6E" : r.status === "declined" ? "#C8BBA8" : CORAL) }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, color: INK }}>{r.org}</div>
@@ -2822,16 +2858,28 @@ function ProcessingQueue({ narrow, setView, onChange }) {
                 {r.notes && <div style={{ fontSize: 13.5, color: INK, fontFamily: FONT_BODY, lineHeight: 1.55, marginTop: 10, maxWidth: 560 }}>{r.notes}</div>}
               </div>
               <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                <div style={{ fontSize: 11, color: "#7C8C8A", fontWeight: 700, fontFamily: FONT_BODY }}>SUGGESTED</div>
+                <div style={{ fontSize: 11, color: "#7C8C8A", fontWeight: 700, fontFamily: FONT_BODY }}>{r.status === "sent" ? "SENT" : "SUGGESTED"}</div>
                 <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 24, color: TEAL }}>{r.amount != null ? fmt(r.amount) : "—"}</div>
               </div>
             </div>
-            {openId === r.id ? (
+            {r.status === "new" && (openId === r.id ? (
               <MarkSentRow req={r} onDone={after} />
             ) : (
               <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
                 <MiniButton kind="save" onClick={() => setOpenId(r.id)}>Mark sent →</MiniButton>
                 <MiniButton kind="delete" onClick={() => dismiss(r.id)}>Dismiss</MiniButton>
+              </div>
+            ))}
+            {r.status === "sent" && (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px dashed " + LINE, fontSize: 12.5, color: "#5E6E6C", fontFamily: FONT_BODY }}>
+                Sent{r.check_date ? " " + fmtCheckDate(r.check_date) : ""}
+                {r.check_number ? " · check #" + r.check_number : ""}
+                {r.processed_at ? " · recorded " + fmtDate(r.processed_at) : ""}
+              </div>
+            )}
+            {r.status === "declined" && (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px dashed " + LINE, fontSize: 12.5, color: "#9B8E80", fontFamily: FONT_BODY }}>
+                Declined{r.processed_at ? " " + fmtDate(r.processed_at) : ""} — not processed.
               </div>
             )}
           </Card>
@@ -2912,7 +2960,7 @@ export default function App() {
     <AuthContext.Provider value={auth}>
       <DataContext.Provider value={{ ...data, refresh: loadData, live: source === "live" }}>
         <div style={{ minHeight: "100vh", background: "#FFF8F2", fontFamily: "'Nunito Sans', sans-serif", color: "#1F3A38" }}>
-          <NavBar view={view} setView={nav} narrow={narrow} />
+          <NavBar view={view} setView={nav} narrow={narrow} signedIn={auth.signedIn} pending={pending} />
 
           {auth.signedIn && (
             <div style={{ background: "#0E7A5F", color: "#fff", textAlign: "center", fontSize: 12, padding: "7px 16px", fontFamily: "'Nunito Sans', sans-serif" }}>
