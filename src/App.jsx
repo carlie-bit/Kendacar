@@ -792,6 +792,7 @@ function GrantEditRow({ row, onDone, narrow }) {
   const [amount, setAmount] = useState(row?.amount ?? "");
   const [category, setCategory] = useState(row?.category ?? CATEGORY_LIST[0]);
   const [checkDate, setCheckDate] = useState(row?.checkDate ?? "");
+  const [checkNumber, setCheckNumber] = useState(row?.checkNumber ?? "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -800,7 +801,7 @@ function GrantEditRow({ row, onDone, narrow }) {
       setErr("Year, organization and a numeric amount are required."); return;
     }
     setBusy(true); setErr("");
-    const payload = { year: Number(year), org: org.trim(), amount: Number(amount), category, check_date: checkDate || null };
+    const payload = { year: Number(year), org: org.trim(), amount: Number(amount), category, check_date: checkDate || null, check_number: String(checkNumber).trim() || null };
     try {
       if (row?.id != null) await authedWrite(session, setSession, "PATCH", "grants?id=eq." + row.id, payload);
       else await authedWrite(session, setSession, "POST", "grants", payload);
@@ -821,6 +822,7 @@ function GrantEditRow({ row, onDone, narrow }) {
       <td style={{ padding: "8px 12px" }}><EdSelect value={category} onChange={setCategory} options={CATEGORY_LIST} /></td>
       <td style={{ padding: "8px 12px" }}><EdInput type="number" value={amount} onChange={setAmount} placeholder="Amount" /></td>
       <td style={{ padding: "8px 12px" }}><EdInput type="date" value={checkDate} onChange={setCheckDate} /></td>
+      <td style={{ padding: "8px 12px" }}><EdInput value={checkNumber} onChange={setCheckNumber} placeholder="Check #" /></td>
       <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           <MiniButton kind="save" onClick={save} disabled={busy}>{busy ? "…" : "Save"}</MiniButton>
@@ -1618,17 +1620,17 @@ function GrantsView({ narrow }) {
             </div>
           )}
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: signedIn ? 640 : 520 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: signedIn ? 760 : 620 }}>
               <thead>
                 <tr style={{ background: "#FFF8F2", borderBottom: "1px solid #EFE7DD" }}>
-                  {["Year", "Organization", "Category", "Amount", "Check Date"].concat(signedIn ? ["Edit"] : []).map(h => (
+                  {["Year", "Organization", "Category", "Amount", "Check Date", "Check #"].concat(signedIn ? ["Edit"] : []).map(h => (
                     <th key={h} style={{ padding: "12px 16px", textAlign: "left", fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#7C8C8A", whiteSpace: "nowrap" }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {signedIn && editId === "new" && <GrantEditRow row={null} onDone={() => setEditId(null)} narrow={narrow} />}
-                {filtered.length === 0 && <tr><td colSpan={signedIn ? 6 : 5} style={{ padding: 32, textAlign: "center", color: "#7C8C8A" }}>No grants match your filters.</td></tr>}
+                {filtered.length === 0 && <tr><td colSpan={signedIn ? 7 : 6} style={{ padding: 32, textAlign: "center", color: "#7C8C8A" }}>No grants match your filters.</td></tr>}
                 {filtered.slice().sort((a, b) => b.year - a.year || b.amount - a.amount).map((g, i) => (
                   editId === g.id && g.id != null ? (
                     <GrantEditRow key={"edit" + g.id} row={g} onDone={() => setEditId(null)} narrow={narrow} />
@@ -1641,6 +1643,7 @@ function GrantsView({ narrow }) {
                     </td>
                     <td style={{ padding: "11px 16px", fontWeight: 700, color: TEAL, whiteSpace: "nowrap" }}>{fmt(g.amount)}</td>
                     <td style={{ padding: "11px 16px", color: "#7C8C8A", whiteSpace: "nowrap" }}>{g.checkDate ? fmtCheckDate(g.checkDate) : <span style={{ color: "#C8BBA8" }}>—</span>}</td>
+                    <td style={{ padding: "11px 16px", color: "#7C8C8A", whiteSpace: "nowrap" }}>{g.checkNumber ? "#" + g.checkNumber : <span style={{ color: "#C8BBA8" }}>—</span>}</td>
                     {signedIn && (
                       <td style={{ padding: "11px 16px" }}>
                         {g.id != null
