@@ -181,7 +181,7 @@ async function fetchLiveData() {
     sb("donations?select=id,year,donor,amount&order=year.desc"),
     sb("investment_assets?select=id,name,value,sort_order&order=sort_order"),
     sb("settings?select=key,value"),
-    sb("grantee_notes?select=org,display_name,contact,contact_role,contact_email,website,description,community,note,core_outcomes"),
+    sb("grantee_notes?select=org,display_name,contact,contact_role,contact_email,website,description,community,note,core_outcomes,mailing_address"),
     sb("grantee_updates?select=id,org,title,body,author,photos,created_at&order=created_at.desc"),
     sb("grantee_programs?select=id,org,name,purpose,metrics,sort_order,status&order=sort_order"),
   ]);
@@ -190,7 +190,7 @@ async function fetchLiveData() {
   notes.forEach(n => { noteMap[n.org] = {
     displayName: n.display_name, contact: n.contact, contactRole: n.contact_role,
     contactEmail: n.contact_email, website: n.website, description: n.description,
-    community: n.community, note: n.note,
+    community: n.community, note: n.note, mailingAddress: n.mailing_address,
     coreOutcomes: n.core_outcomes || null,
   }; });
   const updateMap = {};
@@ -1647,7 +1647,10 @@ function GrantsView({ narrow }) {
                     {signedIn && (
                       <td style={{ padding: "11px 16px" }}>
                         {g.id != null
-                          ? <MiniButton kind="edit" onClick={() => setEditId(g.id)}>Edit</MiniButton>
+                          ? <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              <MiniButton kind="edit" onClick={() => setEditId(g.id)}>Edit</MiniButton>
+                              <GrantLetterButton grant={g} />
+                            </div>
                           : <span style={{ fontSize: 11, color: "#C8BBA8" }}>—</span>}
                       </td>
                     )}
@@ -1990,7 +1993,7 @@ function GranteeProfileEditor({ org, note, exists, onDone }) {
     display_name: note?.displayName || "", website: note?.website || "",
     contact: note?.contact || "", contact_role: note?.contactRole || "",
     contact_email: note?.contactEmail || "", community: note?.community || "",
-    description: note?.description || "",
+    description: note?.description || "", mailing_address: note?.mailingAddress || "",
   });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -2024,6 +2027,11 @@ function GranteeProfileEditor({ org, note, exists, onDone }) {
         {fld("Contact role", "contact_role", "e.g. Executive Director")}
         {fld("Contact email", "contact_email", "name@org.org")}
         {fld("Home community", "community", "e.g. Port Austin, MI")}
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontFamily: FONT_BODY, fontWeight: 700, fontSize: 12, color: INK, marginBottom: 4 }}>Mailing address</div>
+        <div style={{ fontSize: 11.5, color: "#9B8E80", marginBottom: 4 }}>As it should appear on a mailed letter — one line per line.</div>
+        <textarea value={f.mailing_address} onChange={e => set("mailing_address", e.target.value)} rows={3} placeholder={"273 Dearborn Court\nGeneva, IL 60134"} style={{ ...formInput, fontSize: 14, padding: "9px 12px", resize: "vertical" }} />
       </div>
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontFamily: FONT_BODY, fontWeight: 700, fontSize: 12, color: INK, marginBottom: 4 }}>Description</div>
@@ -2311,6 +2319,107 @@ function CoreOutcomesEditor({ org, note, onDone }) {
   );
 }
 function narrowGrid() { return "repeat(2, minmax(0,1fr))"; }
+
+// =============================================================================
+//  WORD DOCUMENT GENERATION
+//  Real .docx files built in the browser so they open editable in Word.
+//  The docx library is imported on demand to keep it out of the main bundle.
+// =============================================================================
+
+const FOUNDATION = {
+  name: "Kendacar Foundation, Inc.",
+  addressLines: ["627 Leonard Pkwy.", "Crystal Lake, IL   60014"],
+  inlineAddress: "627 Leonard Pkwy, Crystal Lake, IL 60014",
+};
+
+// Who can sign. Contact details appear in the letter's "reach out to me" line.
+const SIGNERS = [
+  { name: "Carlie Dobbeck",    title: "Trustee",   email: "cdobbeck@gmail.com", phone: "(815)355-6882" },
+  { name: "Christine Smith",   title: "President", email: "", phone: "" },
+  { name: "Kendra S. Rogocki", title: "Secretary", email: "", phone: "" },
+];
+const defaultSigner = email => SIGNERS.find(s => s.email && email && s.email.toLowerCase() === email.toLowerCase()) || SIGNERS[0];
+
+const MONTHS_FULL = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+// "2026-01-05" -> "January 5, 2026"
+const fmtLetterDate = s => {
+  if (!s) return "";
+  const p = String(s).split("-");
+  if (p.length !== 3) return String(s);
+  return MONTHS_FULL[Number(p[1]) - 1] + " " + Number(p[2]) + ", " + p[0];
+};
+
+// The foundation name ends in "Inc." — avoid doubling the period when it closes a sentence.
+const endSentence = t => (/[.!?]$/.test(t) ? t : t + ".");
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// The cover letter that goes out with a grant check.
+async function generateGrantLetter({ grant, note, signer }) {
+  const { Document, Packer, Paragraph, TextRun } = await import("docx");
+  const P = t => new Paragraph({ children: [new TextRun(t || "")] });
+  const orgName = (note && note.displayName) || grant.org;
+  const addrLines = String((note && note.mailingAddress) || "").split("\n").map(l => l.trim()).filter(Boolean);
+  // Fall back to the foundation's standing contact if this signer has none on file.
+  const c = (signer.phone || signer.email) ? signer : SIGNERS[0];
+  const reach = [c.phone, c.email].filter(Boolean).join(" or ");
+  const dated = grant.checkDate || new Date().toISOString().slice(0, 10);
+
+  const kids = [];
+  kids.push(P(FOUNDATION.name));
+  FOUNDATION.addressLines.forEach(l => kids.push(P(l)));
+  kids.push(P(""));
+  kids.push(P(fmtLetterDate(dated)));
+  kids.push(P(""));
+  kids.push(P(orgName));
+  if (note && note.contact) kids.push(P("Attn: " + note.contact));
+  addrLines.forEach(l => kids.push(P(l)));
+  kids.push(P(""));
+  kids.push(P("Dear " + orgName + ","));
+  kids.push(P(""));
+  kids.push(P("Please see the enclosed donation of " + fmt(grant.amount) + " from " + endSentence(FOUNDATION.name) +
+    "  We are happy to support your organization, knowing that it is such an important part of our community."));
+  kids.push(P(""));
+  kids.push(P("We would greatly appreciate the receipt for the donation to be sent to " + FOUNDATION.inlineAddress +
+    ".  Please be sure to note the donation was provided by " + endSentence(FOUNDATION.name) +
+    (reach ? " Please reach out to me with any questions at " + reach + "." : "")));
+  kids.push(P(""));
+  kids.push(P("Sincerely,"));
+  kids.push(P("")); kids.push(P(""));
+  kids.push(P(signer.name));
+  kids.push(P(signer.title));
+
+  const doc = new Document({
+    styles: { default: { document: { run: { font: "Georgia", size: 22 } } } },
+    sections: [{ children: kids }],
+  });
+  downloadBlob(await Packer.toBlob(doc), grant.year + "_Kendacar Foundation Letter to " + orgName + ".docx");
+}
+
+// Small button that generates the cover letter for one grant.
+function GrantLetterButton({ grant }) {
+  const { granteeNotes } = useData();
+  const { email } = useAuth();
+  const [busy, setBusy] = useState(false);
+  const note = granteeNotes[grant.org];
+  async function go() {
+    if (!note || !note.mailingAddress) {
+      if (!window.confirm("No mailing address on file for " + grant.org +
+        ".\n\nThe letter will be generated without one — you can add the address on the grantee's page so it fills in next time.\n\nGenerate anyway?")) return;
+    }
+    setBusy(true);
+    try { await generateGrantLetter({ grant, note, signer: defaultSigner(email) }); }
+    catch (e) { alert("Couldn't build the letter: " + e.message); }
+    finally { setBusy(false); }
+  }
+  return <MiniButton kind="edit" onClick={go} disabled={busy}>{busy ? "…" : "Letter"}</MiniButton>;
+}
 
 // Format a YYYY-MM-DD check date without timezone drift.
 const fmtCheckDate = s => {
