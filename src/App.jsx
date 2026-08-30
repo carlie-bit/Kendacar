@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, createContext, useContext, Fragment } from "react";
+import { useState, useMemo, useEffect, useRef, createContext, useContext, Fragment } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend, LineChart, Line, CartesianGrid, Area, AreaChart
@@ -159,6 +159,40 @@ async function uploadFile(session, file, org) {
   });
   if (!res.ok) throw new Error("Upload failed (" + res.status + "). " + (await res.text().catch(() => "")));
   return { url: SUPABASE_URL + "/storage/v1/object/public/grantee-photos/" + path, name: file.name, type: file.type || "" };
+}
+
+// ---- private grant paperwork (admin only, never public-by-URL) ----
+// Upload into the private grant-docs bucket.
+async function uploadPrivateDoc(session, setSession, path, file) {
+  const doReq = tok => fetch(SUPABASE_URL + "/storage/v1/object/grant-docs/" + encodeURI(path), {
+    method: "POST",
+    headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + tok, "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  let res = await doReq(session.access_token);
+  if (res.status === 401) {
+    const r = await refreshSession(session);
+    if (r) { setSession(r); saveSession(r); res = await doReq(r.access_token); }
+  }
+  if (!res.ok) throw new Error("Upload failed (" + res.status + "). " + (await res.text().catch(() => "")));
+  return true;
+}
+
+// Short-lived signed link so a private document can be opened without making it public.
+async function signedDocUrl(session, setSession, path) {
+  const doReq = tok => fetch(SUPABASE_URL + "/storage/v1/object/sign/grant-docs/" + encodeURI(path), {
+    method: "POST",
+    headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + tok, "Content-Type": "application/json" },
+    body: JSON.stringify({ expiresIn: 300 }),
+  });
+  let res = await doReq(session.access_token);
+  if (res.status === 401) {
+    const r = await refreshSession(session);
+    if (r) { setSession(r); saveSession(r); res = await doReq(r.access_token); }
+  }
+  if (!res.ok) throw new Error("Couldn't build a link (" + res.status + ").");
+  const j = await res.json();
+  return SUPABASE_URL + "/storage/v1" + j.signedURL;
 }
 
 // Is this attachment an image? Handles both legacy bare-URL strings and {url,name,type} objects.
@@ -1529,12 +1563,26 @@ function InvestmentsView({ narrow }) {
 
 function GrantsView({ narrow }) {
   const { grants } = useData();
-  const { signedIn } = useAuth();
+  const { signedIn, session, setSession } = useAuth();
+  const [docs, setDocs] = useState({});   // grant_id -> uploaded documents
   const [yearFilter, setYearFilter] = useState("All Years");
   const [orgFilter,  setOrgFilter]  = useState("All Organizations");
   const [catFilter,  setCatFilter]  = useState("All Categories");
   const [tab, setTab] = useState("grants");
   const [editId, setEditId] = useState(null); // grant id being edited, or "new"
+
+  // One query for every grant's paperwork, indexed by grant so each row is cheap.
+  const loadDocs = async () => {
+    if (!signedIn) { setDocs({}); return; }
+    try {
+      const rows = await authedGet(session, setSession,
+        "grant_documents?select=id,grant_id,kind,storage_path,filename,uploaded_at&order=uploaded_at.desc");
+      const m = {};
+      rows.forEach(r => { (m[r.grant_id] = m[r.grant_id] || []).push(r); });
+      setDocs(m);
+    } catch { /* leave the buttons in their empty state */ }
+  };
+  useEffect(() => { loadDocs(); /* eslint-disable-next-line */ }, [signedIn]);
 
   const ALL_YEARS = useMemo(() => yearOptions(grants), [grants]);
   const ALL_ORGS  = useMemo(() => orgOptions(grants),  [grants]);
@@ -1650,6 +1698,7 @@ function GrantsView({ narrow }) {
                           ? <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                               <MiniButton kind="edit" onClick={() => setEditId(g.id)}>Edit</MiniButton>
                               <GrantLetterButton grant={g} />
+                              <GrantReceiptButton grant={g} docs={docs[g.id]} onChange={loadDocs} />
                             </div>
                           : <span style={{ fontSize: 11, color: "#C8BBA8" }}>—</span>}
                       </td>
@@ -2400,6 +2449,52 @@ async function generateGrantLetter({ grant, note, signer }) {
     sections: [{ children: kids }],
   });
   downloadBlob(await Packer.toBlob(doc), grant.year + "_Kendacar Foundation Letter to " + orgName + ".docx");
+}
+
+// Upload or open the acknowledgment a grantee mails back for a grant.
+function GrantReceiptButton({ grant, docs, onChange }) {
+  const { session, setSession } = useAuth();
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef(null);
+  const doc = (docs || [])[0];
+
+  async function pick(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setBusy(true);
+    try {
+      const safe = file.name.replace(/[^A-Za-z0-9._-]+/g, "_");
+      const path = grant.id + "/" + Date.now() + "_" + safe;
+      await uploadPrivateDoc(session, setSession, path, file);
+      await authedWrite(session, setSession, "POST", "grant_documents", {
+        grant_id: grant.id, kind: "receipt", storage_path: path,
+        filename: file.name, content_type: file.type || null,
+      });
+      if (onChange) await onChange();
+    } catch (err) { alert("Upload failed: " + err.message); }
+    finally { setBusy(false); }
+  }
+
+  async function open() {
+    setBusy(true);
+    try { window.open(await signedDocUrl(session, setSession, doc.storage_path), "_blank", "noopener"); }
+    catch (err) { alert(err.message); }
+    finally { setBusy(false); }
+  }
+
+  if (doc) {
+    return <MiniButton kind="save" onClick={open} disabled={busy}>{busy ? "\u2026" : "\u2713 Receipt"}</MiniButton>;
+  }
+  return (
+    <>
+      <input ref={fileRef} type="file" onChange={pick} style={{ display: "none" }}
+             accept=".pdf,.png,.jpg,.jpeg,.heic,.doc,.docx" />
+      <MiniButton kind="cancel" onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}>
+        {busy ? "Uploading\u2026" : "+ Receipt"}
+      </MiniButton>
+    </>
+  );
 }
 
 // Small button that generates the cover letter for one grant.
