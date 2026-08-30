@@ -1570,6 +1570,32 @@ function GrantsView({ narrow }) {
   const [catFilter,  setCatFilter]  = useState("All Categories");
   const [tab, setTab] = useState("grants");
   const [editId, setEditId] = useState(null); // grant id being edited, or "new"
+  const [sortKey, setSortKey] = useState("date");  // default: most recent first
+  const [sortDir, setSortDir] = useState("desc");
+
+  // Undated grants sort at the end of their year so old and new stay in one sensible order.
+  const sortVal = (g, key) => {
+    if (key === "year")     return g.year || 0;
+    if (key === "org")      return String(g.org || "").toLowerCase();
+    if (key === "category") return String(g.category || "").toLowerCase();
+    if (key === "amount")   return Number(g.amount) || 0;
+    if (key === "check")    return g.checkNumber ? Number(g.checkNumber) || 0 : -1;
+    return g.checkDate || (g.year + "-12-31");
+  };
+  const compareGrants = (a, b) => {
+    const va = sortVal(a, sortKey), vb = sortVal(b, sortKey);
+    let r = va < vb ? -1 : va > vb ? 1 : 0;
+    if (sortDir === "desc") r = -r;
+    if (r !== 0) return r;
+    const da = sortVal(a, "date"), db = sortVal(b, "date");   // tiebreak: newest, then largest
+    if (da !== db) return da < db ? 1 : -1;
+    return (Number(b.amount) || 0) - (Number(a.amount) || 0);
+  };
+  const toggleSort = key => {
+    if (key === sortKey) { setSortDir(d => (d === "desc" ? "asc" : "desc")); return; }
+    setSortKey(key);
+    setSortDir(key === "org" || key === "category" ? "asc" : "desc");  // names read better A-Z
+  };
 
   // One query for every grant's paperwork, indexed by grant so each row is cheap.
   const loadDocs = async () => {
@@ -1671,15 +1697,28 @@ function GrantsView({ narrow }) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: signedIn ? 760 : 620 }}>
               <thead>
                 <tr style={{ background: "#FFF8F2", borderBottom: "1px solid #EFE7DD" }}>
-                  {["Year", "Organization", "Category", "Amount", "Check Date", "Check #"].concat(signedIn ? ["Edit"] : []).map(h => (
-                    <th key={h} style={{ padding: "12px 16px", textAlign: "left", fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#7C8C8A", whiteSpace: "nowrap" }}>{h}</th>
+                  {[["year", "Year"], ["org", "Organization"], ["category", "Category"], ["amount", "Amount"], ["date", "Check Date"], ["check", "Check #"]]
+                    .concat(signedIn ? [["", "Edit"]] : []).map(([key, label]) => (
+                    <th key={label} style={{ padding: "12px 16px", textAlign: "left", fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#7C8C8A", whiteSpace: "nowrap" }}>
+                      {key ? (
+                        <button onClick={() => toggleSort(key)} title={"Sort by " + label} style={{
+                          background: "none", border: "none", padding: 0, cursor: "pointer",
+                          fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 11, letterSpacing: "0.08em",
+                          textTransform: "uppercase", color: sortKey === key ? TEAL : "#7C8C8A",
+                          display: "inline-flex", alignItems: "center", gap: 4,
+                        }}>
+                          {label}
+                          <span style={{ fontSize: 8, opacity: sortKey === key ? 1 : 0.3 }}>{sortKey === key && sortDir === "asc" ? "\u25B2" : "\u25BC"}</span>
+                        </button>
+                      ) : label}
+                    </th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {signedIn && editId === "new" && <GrantEditRow row={null} onDone={() => setEditId(null)} narrow={narrow} />}
                 {filtered.length === 0 && <tr><td colSpan={signedIn ? 7 : 6} style={{ padding: 32, textAlign: "center", color: "#7C8C8A" }}>No grants match your filters.</td></tr>}
-                {filtered.slice().sort((a, b) => b.year - a.year || b.amount - a.amount).map((g, i) => (
+                {filtered.slice().sort(compareGrants).map((g, i) => (
                   editId === g.id && g.id != null ? (
                     <GrantEditRow key={"edit" + g.id} row={g} onDone={() => setEditId(null)} narrow={narrow} />
                   ) : (
