@@ -215,7 +215,7 @@ async function fetchLiveData() {
     sb("donations?select=id,year,donor,amount&order=year.desc"),
     sb("investment_assets?select=id,name,value,sort_order&order=sort_order"),
     sb("settings?select=key,value"),
-    sb("grantee_notes?select=org,display_name,contact,contact_role,contact_email,website,description,community,note,core_outcomes,mailing_address"),
+    sb("grantee_notes?select=org,display_name,contact,contact_role,contact_email,website,description,community,note,core_outcomes,mailing_address,phone"),
     sb("grantee_updates?select=id,org,title,body,author,photos,created_at&order=created_at.desc"),
     sb("grantee_programs?select=id,org,name,purpose,metrics,sort_order,status&order=sort_order"),
   ]);
@@ -224,7 +224,7 @@ async function fetchLiveData() {
   notes.forEach(n => { noteMap[n.org] = {
     displayName: n.display_name, contact: n.contact, contactRole: n.contact_role,
     contactEmail: n.contact_email, website: n.website, description: n.description,
-    community: n.community, note: n.note, mailingAddress: n.mailing_address,
+    community: n.community, note: n.note, mailingAddress: n.mailing_address, phone: n.phone,
     coreOutcomes: n.core_outcomes || null,
   }; });
   const updateMap = {};
@@ -2043,6 +2043,7 @@ function GranteeProfileEditor({ org, note, exists, onDone }) {
     contact: note?.contact || "", contact_role: note?.contactRole || "",
     contact_email: note?.contactEmail || "", community: note?.community || "",
     description: note?.description || "", mailing_address: note?.mailingAddress || "",
+    phone: note?.phone || "",
   });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -2076,6 +2077,7 @@ function GranteeProfileEditor({ org, note, exists, onDone }) {
         {fld("Contact role", "contact_role", "e.g. Executive Director")}
         {fld("Contact email", "contact_email", "name@org.org")}
         {fld("Home community", "community", "e.g. Port Austin, MI")}
+        {fld("Phone", "phone", "772.562.9860")}
       </div>
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontFamily: FONT_BODY, fontWeight: 700, fontSize: 12, color: INK, marginBottom: 4 }}>Mailing address</div>
@@ -2624,13 +2626,19 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
             {signedIn && !editingProfile && <div style={{ marginTop: 10 }}><MiniButton kind="edit" onClick={() => setEditingProfile(true)}>Edit profile</MiniButton></div>}
           </div>
         </div>
-        {note && (note.description || note.contact) && (
+        {note && (note.description || note.contact || note.mailingAddress || note.phone) && (
           <div style={{ marginTop: 20, paddingTop: 18, borderTop: "1px solid " + LINE }}>
             {note.description && <div style={{ fontSize: 14.5, color: INK, lineHeight: 1.6, maxWidth: 740, fontFamily: FONT_BODY, marginBottom: note.contact ? 12 : 0 }}>{note.description}</div>}
             {note.contact && (
               <div style={{ fontSize: 13.5, color: "#5E6E6C", fontFamily: FONT_BODY }}>
                 <strong style={{ color: INK }}>{note.contact}</strong>{note.contactRole ? " · " + note.contactRole : ""}
                 {note.contactEmail && <> · <a href={"mailto:" + note.contactEmail} style={{ color: TEAL, fontWeight: 700, textDecoration: "none" }}>{note.contactEmail}</a></>}
+              </div>
+            )}
+            {(note.mailingAddress || note.phone) && (
+              <div style={{ fontSize: 13, color: "#7C8C8A", fontFamily: FONT_BODY, marginTop: 10, lineHeight: 1.5 }}>
+                {String(note.mailingAddress || "").split("\n").filter(l => l.trim()).map((l, i) => <div key={i}>{l}</div>)}
+                {note.phone && <div>{note.phone}</div>}
               </div>
             )}
           </div>
