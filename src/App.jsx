@@ -1563,13 +1563,14 @@ function InvestmentsView({ narrow }) {
 
 function GrantsView({ narrow }) {
   const { grants } = useData();
-  const { signedIn, session, setSession } = useAuth();
+  const { signedIn, session, setSession, email } = useAuth();
   const [docs, setDocs] = useState({});   // grant_id -> uploaded documents
   const [yearFilter, setYearFilter] = useState("All Years");
   const [orgFilter,  setOrgFilter]  = useState("All Organizations");
   const [catFilter,  setCatFilter]  = useState("All Categories");
   const [tab, setTab] = useState("grants");
   const [editId, setEditId] = useState(null); // grant id being edited, or "new"
+  const [signerIdx, setSignerIdx] = useState(0);   // who signs the cover letters
   const [sortKey, setSortKey] = useState("date");  // default: most recent first
   const [sortDir, setSortDir] = useState("desc");
 
@@ -1609,6 +1610,12 @@ function GrantsView({ narrow }) {
     } catch { /* leave the buttons in their empty state */ }
   };
   useEffect(() => { loadDocs(); /* eslint-disable-next-line */ }, [signedIn]);
+
+  // Default the signature to whoever is signed in, so letters go out in their own name.
+  useEffect(() => {
+    const i = SIGNERS.findIndex(x => x.email && email && x.email.toLowerCase() === email.toLowerCase());
+    if (i >= 0) setSignerIdx(i);
+  }, [email]);
 
   const ALL_YEARS = useMemo(() => yearOptions(grants), [grants]);
   const ALL_ORGS  = useMemo(() => orgOptions(grants),  [grants]);
@@ -1690,7 +1697,18 @@ function GrantsView({ narrow }) {
           {signedIn && (
             <div style={{ padding: "12px 16px", borderBottom: "1px solid #F3ECE3", background: "#FBF4EC", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
               <span style={{ fontSize: 12, color: "#7C8C8A" }}>You're signed in — click <strong>Edit</strong> on any grant, or add a new one.</span>
-              <MiniButton kind="edit" onClick={() => setEditId(editId === "new" ? null : "new")}>{editId === "new" ? "Close" : "+ Add grant"}</MiniButton>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <label style={{ fontSize: 12, color: "#7C8C8A", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  Letters signed by
+                  <select value={signerIdx} onChange={e => setSignerIdx(Number(e.target.value))} style={{
+                    fontFamily: FONT_BODY, fontSize: 12, padding: "5px 8px", borderRadius: 6,
+                    border: "1px solid #E2D7C9", background: "#fff", color: INK, cursor: "pointer",
+                  }}>
+                    {SIGNERS.map((sg, i) => <option key={sg.name} value={i}>{sg.name} — {sg.title}</option>)}
+                  </select>
+                </label>
+                <MiniButton kind="edit" onClick={() => setEditId(editId === "new" ? null : "new")}>{editId === "new" ? "Close" : "+ Add grant"}</MiniButton>
+              </div>
             </div>
           )}
           <div style={{ overflowX: "auto" }}>
@@ -1736,7 +1754,7 @@ function GrantsView({ narrow }) {
                         {g.id != null
                           ? <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                               <MiniButton kind="edit" onClick={() => setEditId(g.id)}>Edit</MiniButton>
-                              <GrantLetterButton grant={g} />
+                              <GrantLetterButton grant={g} signer={SIGNERS[signerIdx]} />
                               <GrantReceiptButton grant={g} docs={docs[g.id]} onChange={loadDocs} />
                             </div>
                           : <span style={{ fontSize: 11, color: "#C8BBA8" }}>—</span>}
@@ -2425,8 +2443,8 @@ const FOUNDATION = {
 // Who can sign. Contact details appear in the letter's "reach out to me" line.
 const SIGNERS = [
   { name: "Carlie Dobbeck",    title: "Trustee",   email: "cdobbeck@gmail.com", phone: "(815)355-6882" },
-  { name: "Christine Smith",   title: "President", email: "", phone: "" },
-  { name: "Kendra S. Rogocki", title: "Secretary", email: "", phone: "" },
+  { name: "Christine Smith",   title: "President", email: "pabsmith28@gmail.com", phone: "" },
+  { name: "Kendra S. Rogocki", title: "Secretary", email: "kendra.rogocki@stantine.com", phone: "" },
 ];
 const defaultSigner = email => SIGNERS.find(s => s.email && email && s.email.toLowerCase() === email.toLowerCase()) || SIGNERS[0];
 
@@ -2539,9 +2557,8 @@ function GrantReceiptButton({ grant, docs, onChange }) {
 }
 
 // Small button that generates the cover letter for one grant.
-function GrantLetterButton({ grant }) {
+function GrantLetterButton({ grant, signer }) {
   const { granteeNotes } = useData();
-  const { email } = useAuth();
   const [busy, setBusy] = useState(false);
   const note = granteeNotes[grant.org];
   async function go() {
@@ -2550,7 +2567,7 @@ function GrantLetterButton({ grant }) {
         ".\n\nThe letter will be generated without one — you can add the address on the grantee's page so it fills in next time.\n\nGenerate anyway?")) return;
     }
     setBusy(true);
-    try { await generateGrantLetter({ grant, note, signer: defaultSigner(email) }); }
+    try { await generateGrantLetter({ grant, note, signer: signer || SIGNERS[0] }); }
     catch (e) { alert("Couldn't build the letter: " + e.message); }
     finally { setBusy(false); }
   }
