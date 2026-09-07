@@ -210,7 +210,7 @@ const useAuth = () => useContext(AuthContext);
 
 // Pull every display table in parallel and shape it like the fallback data.
 async function fetchLiveData() {
-  const [grants, donations, assets, settings, notes, updates, programs] = await Promise.all([
+  const [grants, donations, assets, settings, notes, updates, programs, gifts] = await Promise.all([
     sb("grants?select=id,year,org,amount,category,check_number,check_date&order=year.desc,amount.desc"),
     sb("donations?select=id,year,donor,amount&order=year.desc"),
     sb("investment_assets?select=id,name,value,sort_order&order=sort_order"),
@@ -218,6 +218,7 @@ async function fetchLiveData() {
     sb("grantee_notes?select=org,display_name,contact,contact_role,contact_email,website,description,community,note,core_outcomes,mailing_address,phone"),
     sb("grantee_updates?select=id,org,title,body,author,photos,created_at&order=created_at.desc"),
     sb("grantee_programs?select=id,org,name,purpose,metrics,sort_order,status&order=sort_order"),
+    sb("contribution_gifts?select=id,gift_date,donor,donor_formal,amount,gift_type,securities,note,receipt_date&order=gift_date.desc"),
   ]);
   const setMap = Object.fromEntries(settings.map(s => [s.key, s.value]));
   const noteMap = {};
@@ -248,6 +249,12 @@ async function fetchLiveData() {
       checkNumber: g.check_number || null, checkDate: g.check_date || null,
     })),
     donations: donations.map(d => ({ id: d.id, year: Number(d.year), donor: d.donor, amount: Number(d.amount) })),
+    contributionGifts: (gifts || []).map(g => ({
+      id: g.id, giftDate: g.gift_date, donor: g.donor, donorFormal: g.donor_formal,
+      amount: Number(g.amount), giftType: g.gift_type,
+      securities: Array.isArray(g.securities) ? g.securities : [],
+      note: g.note, receiptDate: g.receipt_date,
+    })),
     investments: {
       asOf: setMap.as_of || "",
       source: setMap.investment_source || "",
@@ -1846,10 +1853,22 @@ function GrantsView({ narrow }) {
 // =============================================================================
 
 function ContributionsView({ narrow }) {
-  const { donations } = useData();
+  const { donations, contributionGifts } = useData();
   const { signedIn } = useAuth();
   const [editId, setEditId] = useState(null);
+  const [openYear, setOpenYear] = useState(null);
   const totalReceived = sumAmount(donations);
+
+  // Individual gifts behind each year. Older years have none — the ledger only ever held a yearly total.
+  const giftsByYear = useMemo(() => {
+    const m = {};
+    (contributionGifts || []).forEach(g => {
+      const y = Number(String(g.giftDate || "").slice(0, 4));
+      if (y) (m[y] = m[y] || []).push(g);
+    });
+    Object.values(m).forEach(list => list.sort((a, b) => (a.giftDate < b.giftDate ? 1 : -1)));
+    return m;
+  }, [contributionGifts]);
   const donByYear = useMemo(() => {
     const byYear = {};
     donations.forEach(d => { byYear[d.year] = (byYear[d.year] || 0) + d.amount; });
@@ -1897,7 +1916,7 @@ function ContributionsView({ narrow }) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: signedIn ? 480 : 360 }}>
               <thead>
                 <tr style={{ background: "#FFF8F2" }}>
-                  {["Year", "Donor", "Amount"].concat(signedIn ? ["Edit"] : []).map(h => (
+                  {["Year", "Donor", "Amount", "Detail"].concat(signedIn ? ["Edit"] : []).map(h => (
                     <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontFamily: "'Fredoka', serif", fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#7C8C8A" }}>{h}</th>
                   ))}
                 </tr>
@@ -1908,12 +1927,56 @@ function ContributionsView({ narrow }) {
                   editId === d.id && d.id != null ? (
                     <DonationEditRow key={"edit" + d.id} row={d} onDone={() => setEditId(null)} />
                   ) : (
-                  <tr key={d.id ?? d.donor + d.year + i} style={{ borderBottom: "1px solid #F3ECE3", background: i % 2 === 0 ? "#fff" : "#FCF7F1" }}>
+                  <Fragment key={d.id ?? d.donor + d.year + i}>
+                  <tr style={{ borderBottom: "1px solid #F3ECE3", background: i % 2 === 0 ? "#fff" : "#FCF7F1" }}>
                     <td style={{ padding: "10px 16px", color: "#7C8C8A" }}>{d.year}</td>
                     <td style={{ padding: "10px 16px", fontWeight: 500 }}>{d.donor}</td>
                     <td style={{ padding: "10px 16px", fontWeight: 700, color: TEAL }}>{fmt(d.amount)}</td>
+                    <td style={{ padding: "10px 16px", whiteSpace: "nowrap" }}>
+                      {(giftsByYear[d.year] || []).length > 0 ? (
+                        <button onClick={() => setOpenYear(openYear === d.year ? null : d.year)} style={{
+                          background: "none", border: "none", padding: 0, cursor: "pointer", color: TEAL,
+                          fontFamily: FONT_BODY, fontSize: 12, fontWeight: 700,
+                        }}>
+                          {openYear === d.year ? "Hide" : "Show"} {giftsByYear[d.year].length} gift{giftsByYear[d.year].length === 1 ? "" : "s"}
+                        </button>
+                      ) : <span style={{ fontSize: 11.5, color: "#C8BBA8" }}>total only</span>}
+                    </td>
                     {signedIn && <td style={{ padding: "10px 16px" }}>{d.id != null ? <MiniButton kind="edit" onClick={() => setEditId(d.id)}>Edit</MiniButton> : <span style={{ fontSize: 11, color: "#C8BBA8" }}>—</span>}</td>}
                   </tr>
+                  {openYear === d.year && (giftsByYear[d.year] || []).map(g => {
+                    const itemized = (giftsByYear[d.year] || []).reduce((s, x) => s + x.amount, 0);
+                    const isFirst = giftsByYear[d.year][0].id === g.id;
+                    return (
+                      <Fragment key={"g" + g.id}>
+                        {isFirst && itemized < d.amount && (
+                          <tr style={{ background: "#FBF4EC" }}>
+                            <td colSpan={signedIn ? 5 : 4} style={{ padding: "8px 16px 4px 32px", fontSize: 11.5, color: "#9B8E80", fontFamily: FONT_BODY }}>
+                              {fmt(itemized)} of {fmt(d.amount)} itemized — the remainder of this year has no gift detail on record.
+                            </td>
+                          </tr>
+                        )}
+                        <tr style={{ background: "#FBF4EC", borderBottom: "1px solid #F3ECE3" }}>
+                          <td style={{ padding: "8px 16px 8px 32px", color: "#5E6E6C", whiteSpace: "nowrap", fontSize: 12.5 }}>{fmtCheckDate(g.giftDate)}</td>
+                          <td colSpan={2} style={{ padding: "8px 16px", fontSize: 12.5, color: "#5E6E6C" }}>
+                            <strong style={{ color: INK }}>{fmt(g.amount)}</strong>
+                            {g.giftType === "securities"
+                              ? " · " + (g.securities.length
+                                  ? g.securities.map(x => x.quantity + " " + x.symbol).join(", ")
+                                  : "securities")
+                              : " · cash"}
+                            {g.note ? <span style={{ color: "#9B8E80" }}> · {g.note}</span> : null}
+                          </td>
+                          <td colSpan={signedIn ? 2 : 1} style={{ padding: "8px 16px", fontSize: 12, whiteSpace: "nowrap" }}>
+                            {g.receiptDate
+                              ? <span style={{ color: "#1F9E6E", fontWeight: 700 }}>receipted {fmtCheckDate(g.receiptDate)}</span>
+                              : <span style={{ color: CORAL, fontWeight: 700 }}>no receipt yet</span>}
+                          </td>
+                        </tr>
+                      </Fragment>
+                    );
+                  })}
+                  </Fragment>
                   )
                 ))}
               </tbody>
