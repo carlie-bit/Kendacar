@@ -3026,19 +3026,46 @@ function RequestGrantForm({ narrow, setView }) {
 }
 
 function ContributionForm({ narrow, setView }) {
+  const { signedIn, session, setSession } = useAuth();
+  const { refresh } = useData();
   const [donor, setDonor] = useState("");
+  const [giftDate, setGiftDate] = useState(new Date().toISOString().slice(0, 10));
   const [amount, setAmount] = useState("");
+  const [giftType, setGiftType] = useState("cash");
+  const [rows, setRows] = useState([{ symbol: "", quantity: "", market_value: "" }]);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [done, setDone] = useState(false);
 
+  const secRows = rows.filter(r => r.symbol.trim() && r.market_value !== "");
+  const secTotal = secRows.reduce((t, r) => t + (Number(r.market_value) || 0), 0);
+  const isSec = giftType === "securities";
+  // A securities gift is worth the sum of its holdings; cash is whatever was typed.
+  const finalAmount = isSec && secRows.length ? secTotal : Number(amount);
+  const setRow = (i, k, v) => setRows(rows.map((r, j) => (j === i ? { ...r, [k]: v } : r)));
+
   async function submit(e) {
     e.preventDefault();
-    if (!donor.trim() || amount === "" || isNaN(Number(amount))) { setErr("Please add your name and a numeric amount."); return; }
+    if (!donor.trim()) { setErr("Please add the donor's name."); return; }
+    if (!finalAmount || isNaN(finalAmount)) { setErr(isSec ? "Add at least one holding with a market value." : "Please add a numeric amount."); return; }
     setBusy(true); setErr("");
     try {
-      await publicInsert("contributions", { donor: donor.trim(), amount: Number(amount), note: note.trim() || null });
+      if (signedIn) {
+        // Trustees write straight to the gift detail, so it shows on the Contributions page at once.
+        await authedWrite(session, setSession, "POST", "contribution_gifts", {
+          gift_date: giftDate, donor: donor.trim(), amount: finalAmount, gift_type: giftType,
+          securities: isSec ? secRows.map(r => ({ symbol: r.symbol.trim().toUpperCase(), quantity: Number(r.quantity) || null, market_value: Number(r.market_value) || 0 })) : [],
+          note: note.trim() || null,
+        });
+        await refresh();
+      } else {
+        // Anyone else lands in the inbox, which emails a trustee to record it.
+        await publicInsert("contributions", {
+          donor: donor.trim(), amount: finalAmount,
+          note: [note.trim(), "Gift date: " + giftDate, isSec ? "Securities: " + secRows.map(r => r.quantity + " " + r.symbol).join(", ") : "Cash"].filter(Boolean).join("\n"),
+        });
+      }
       setDone(true);
     } catch (e2) { setErr(e2.message); setBusy(false); }
   }
@@ -3053,9 +3080,42 @@ function ContributionForm({ narrow, setView }) {
         <FormField label="Your name">
           <input value={donor} onChange={e => setDonor(e.target.value)} placeholder="Donor name" style={formInput} />
         </FormField>
-        <FormField label="Amount">
-          <input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="$" style={formInput} />
+        <FormField label="Date of the gift">
+          <input type="date" value={giftDate} onChange={e => setGiftDate(e.target.value)} style={formInput} />
         </FormField>
+        <FormField label="What was given">
+          <div style={{ display: "flex", gap: 8 }}>
+            {[["cash", "Cash"], ["securities", "Stock or securities"]].map(([id, lbl]) => (
+              <button type="button" key={id} onClick={() => setGiftType(id)} style={{
+                flex: 1, background: giftType === id ? TEAL : "#fff", color: giftType === id ? "#fff" : "#7C8C8A",
+                border: "1px solid " + (giftType === id ? TEAL : "#E2D7C9"), borderRadius: 10,
+                padding: "11px 14px", fontSize: 14, fontWeight: 700, fontFamily: FONT_BODY, cursor: "pointer",
+              }}>{lbl}</button>
+            ))}
+          </div>
+        </FormField>
+        {isSec ? (
+          <FormField label="Holdings" hint="One line per security">
+            {rows.map((r, i) => (
+              <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.2fr auto", gap: 8, marginBottom: 8 }}>
+                <input value={r.symbol} onChange={e => setRow(i, "symbol", e.target.value)} placeholder="Symbol" style={formInput} />
+                <input type="number" value={r.quantity} onChange={e => setRow(i, "quantity", e.target.value)} placeholder="Shares" style={formInput} />
+                <input type="number" value={r.market_value} onChange={e => setRow(i, "market_value", e.target.value)} placeholder="Market value $" style={formInput} />
+                <button type="button" onClick={() => setRows(rows.length > 1 ? rows.filter((_, j) => j !== i) : rows)}
+                  title="Remove" style={{ background: "none", border: "1px solid #E2D7C9", borderRadius: 8, padding: "0 12px", color: "#B5451B", cursor: "pointer", fontSize: 16 }}>&times;</button>
+              </div>
+            ))}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <button type="button" onClick={() => setRows([...rows, { symbol: "", quantity: "", market_value: "" }])}
+                style={{ background: "none", border: "none", color: TEAL, fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: FONT_BODY, padding: 0 }}>+ Add another security</button>
+              {secRows.length > 0 && <div style={{ fontSize: 13.5, color: INK, fontFamily: FONT_BODY }}>Total market value <strong style={{ color: TEAL }}>{fmt(secTotal)}</strong></div>}
+            </div>
+          </FormField>
+        ) : (
+          <FormField label="Amount">
+            <input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="$" style={formInput} />
+          </FormField>
+        )}
         <FormField label="Note" hint="Optional">
           <textarea value={note} onChange={e => setNote(e.target.value)} rows={3} placeholder="Anything to add" style={{ ...formInput, resize: "vertical" }} />
         </FormField>
