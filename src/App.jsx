@@ -1855,11 +1855,25 @@ function GrantsView({ narrow }) {
 
 function ContributionsView({ narrow }) {
   const { donations, contributionGifts, refresh } = useData();
-  const { signedIn, email } = useAuth();
+  const { signedIn, email, session, setSession } = useAuth();
   const [signerIdx, setSignerIdx] = useState(0);   // who signs the receipts
   const [editId, setEditId] = useState(null);
   const [openYear, setOpenYear] = useState(null);
   const totalReceived = sumAmount(donations);
+
+  // Documents filed against each gift, indexed by gift.
+  const [giftDocs, setGiftDocs] = useState({});
+  const loadGiftDocs = async () => {
+    if (!signedIn) { setGiftDocs({}); return; }
+    try {
+      const rows = await authedGet(session, setSession,
+        "gift_documents?select=id,gift_id,storage_path,filename,uploaded_at&order=uploaded_at.desc");
+      const m = {};
+      rows.forEach(r => { (m[r.gift_id] = m[r.gift_id] || []).push(r); });
+      setGiftDocs(m);
+    } catch { /* buttons fall back to their empty state */ }
+  };
+  useEffect(() => { loadGiftDocs(); /* eslint-disable-next-line */ }, [signedIn]);
 
   // Receipts go out over the signer's name — default to whoever is signed in.
   useEffect(() => {
@@ -1993,7 +2007,8 @@ function ContributionsView({ narrow }) {
                               {g.receiptDate
                                 ? <span style={{ color: "#1F9E6E", fontWeight: 700 }}>receipted {fmtCheckDate(g.receiptDate)}</span>
                                 : <span style={{ color: CORAL, fontWeight: 700 }}>no receipt yet</span>}
-                              {signedIn && <GiftReceiptButton gift={g} signer={SIGNERS[signerIdx]} onDone={refresh} />}
+                              {signedIn && <GiftReceiptButton gift={g} signer={SIGNERS[signerIdx]} onDone={async () => { await refresh(); await loadGiftDocs(); }} />}
+                              {signedIn && <GiftDocButton gift={g} docs={giftDocs[g.id]} onChange={loadGiftDocs} />}
                             </span>
                           </td>
                         </tr>
@@ -2643,6 +2658,50 @@ function GrantReceiptButton({ grant, docs, onChange }) {
   );
 }
 
+const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+// Upload or open the receipt filed against a gift.
+function GiftDocButton({ gift, docs, onChange }) {
+  const { session, setSession } = useAuth();
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef(null);
+  const doc = (docs || [])[0];
+
+  async function pick(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setBusy(true);
+    try {
+      const safe = file.name.replace(/[^A-Za-z0-9._-]+/g, "_");
+      const path = "gifts/" + gift.id + "/" + Date.now() + "_" + safe;
+      await uploadPrivateDoc(session, setSession, path, file);
+      await authedWrite(session, setSession, "POST", "gift_documents", {
+        gift_id: gift.id, kind: "receipt", storage_path: path,
+        filename: file.name, content_type: file.type || null,
+      });
+      if (onChange) await onChange();
+    } catch (err) { alert("Upload failed: " + err.message); }
+    finally { setBusy(false); }
+  }
+  async function open() {
+    setBusy(true);
+    try { window.open(await signedDocUrl(session, setSession, doc.storage_path), "_blank", "noopener"); }
+    catch (err) { alert(err.message); }
+    finally { setBusy(false); }
+  }
+  if (doc) return <MiniButton kind="save" onClick={open} disabled={busy}>{busy ? "\u2026" : "\u2713 On file"}</MiniButton>;
+  return (
+    <>
+      <input ref={fileRef} type="file" onChange={pick} style={{ display: "none" }}
+             accept=".pdf,.doc,.docx,.png,.jpg,.jpeg" />
+      <MiniButton kind="cancel" onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}>
+        {busy ? "\u2026" : "Attach"}
+      </MiniButton>
+    </>
+  );
+}
+
 // Donor receipts keep their own letterhead wording ("Inc." without the comma).
 const RECEIPT_FOUNDATION = {
   name: "Kendacar Foundation Inc.",
@@ -2710,7 +2769,10 @@ async function generateDonorReceipt({ gift, signer, receiptDate }) {
     sections: [{ children: kids }],
   });
   const stamp = String(gift.giftDate || "").replace(/-/g, "");
-  downloadBlob(await Packer.toBlob(doc), stamp + "_Kendacar " + gift.donor + " Donation Receipt.docx");
+  const filename = stamp + "_Kendacar " + gift.donor + " Donation Receipt.docx";
+  const blob = await Packer.toBlob(doc);
+  downloadBlob(blob, filename);
+  return { blob, filename };
 }
 
 // Generates the receipt for one gift and stamps it as receipted.
@@ -2721,11 +2783,19 @@ function GiftReceiptButton({ gift, signer, onDone }) {
     setBusy(true);
     try {
       const when = gift.receiptDate || new Date().toISOString().slice(0, 10);
-      await generateDonorReceipt({ gift, signer: signer || SIGNERS[0], receiptDate: when });
+      const { blob, filename } = await generateDonorReceipt({ gift, signer: signer || SIGNERS[0], receiptDate: when });
+      // Keep the issued receipt on the site, not only in the browser's downloads folder.
+      try {
+        const path = "gifts/" + gift.id + "/" + Date.now() + "_" + filename.replace(/[^A-Za-z0-9._-]+/g, "_");
+        await uploadPrivateDoc(session, setSession, path, new File([blob], filename, { type: DOCX_MIME }));
+        await authedWrite(session, setSession, "POST", "gift_documents", {
+          gift_id: gift.id, kind: "receipt", storage_path: path, filename, content_type: DOCX_MIME,
+        });
+      } catch (up) { console.warn("receipt saved locally but not filed:", up); }
       if (!gift.receiptDate) {
         await authedWrite(session, setSession, "PATCH", "contribution_gifts?id=eq." + gift.id, { receipt_date: when });
-        if (onDone) await onDone();
       }
+      if (onDone) await onDone();
     } catch (e) { alert("Couldn't build the receipt: " + e.message); }
     finally { setBusy(false); }
   }
