@@ -2572,8 +2572,10 @@ function downloadBlob(blob, filename) {
 
 // The cover letter that goes out with a grant check.
 async function generateGrantLetter({ grant, note, signer }) {
-  const { Document, Packer, Paragraph, TextRun } = await import("docx");
+  const { Document, Packer, Paragraph, TextRun, AlignmentType } = await import("docx");
   const P = t => new Paragraph({ children: [new TextRun(t || "")] });
+  // The letterhead is centred, as it is on the letters these are modelled on.
+  const C = t => new Paragraph({ children: [new TextRun(t || "")], alignment: AlignmentType.CENTER });
   const orgName = (note && note.displayName) || grant.org;
   const addrLines = String((note && note.mailingAddress) || "").split("\n").map(l => l.trim()).filter(Boolean);
   // Fall back to the foundation's standing contact if this signer has none on file.
@@ -2582,8 +2584,8 @@ async function generateGrantLetter({ grant, note, signer }) {
   const dated = grant.checkDate || new Date().toISOString().slice(0, 10);
 
   const kids = [];
-  kids.push(P(FOUNDATION.name));
-  FOUNDATION.addressLines.forEach(l => kids.push(P(l)));
+  kids.push(C(FOUNDATION.name));
+  FOUNDATION.addressLines.forEach(l => kids.push(C(l)));
   kids.push(P(""));
   kids.push(P(fmtLetterDate(dated)));
   kids.push(P(""));
@@ -2712,15 +2714,16 @@ const fmtMoney2 = n => "$" + Number(n).toLocaleString("en-US", { minimumFraction
 
 // The acknowledgment a donor keeps for their own tax records.
 async function generateDonorReceipt({ gift, signer, receiptDate }) {
-  const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType } = await import("docx");
+  const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, AlignmentType, BorderStyle } = await import("docx");
   const P = t => new Paragraph({ children: [new TextRun(t || "")] });
+  const C = t => new Paragraph({ children: [new TextRun(t || "")], alignment: AlignmentType.CENTER });
   const addr = String(gift.donorAddress || "").split("\n").map(l => l.trim()).filter(Boolean);
   const greeting = gift.donorGreeting || gift.donorFormal || gift.donor;
   const isSec = gift.giftType === "securities" && (gift.securities || []).length > 0;
 
   const kids = [];
-  kids.push(P(RECEIPT_FOUNDATION.name));
-  RECEIPT_FOUNDATION.addressLines.forEach(l => kids.push(P(l)));
+  kids.push(C(RECEIPT_FOUNDATION.name));
+  RECEIPT_FOUNDATION.addressLines.forEach(l => kids.push(C(l)));
   kids.push(P(""));
   kids.push(P(fmtLetterDate(receiptDate)));
   kids.push(P(""));
@@ -2738,8 +2741,10 @@ async function generateDonorReceipt({ gift, signer, receiptDate }) {
       width: { size: 33, type: WidthType.PERCENTAGE },
       children: [new Paragraph({ children: [new TextRun({ text: t, bold: !!bold })] })],
     });
+    const line = { style: BorderStyle.SINGLE, size: 4, color: "auto" };
     kids.push(new Table({
       width: { size: 100, type: WidthType.PERCENTAGE },
+      borders: { top: line, bottom: line, left: line, right: line, insideHorizontal: line, insideVertical: line },
       rows: [
         new TableRow({ children: [cell("Symbol", true), cell("Quantity", true), cell("Market Value", true)] }),
       ].concat(gift.securities.map(x => new TableRow({
