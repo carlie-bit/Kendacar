@@ -218,7 +218,7 @@ async function fetchLiveData() {
     sb("grantee_notes?select=org,display_name,contact,contact_role,contact_email,website,description,community,note,core_outcomes,mailing_address,phone"),
     sb("grantee_updates?select=id,org,title,body,author,photos,created_at&order=created_at.desc"),
     sb("grantee_programs?select=id,org,name,purpose,metrics,sort_order,status&order=sort_order"),
-    sb("contribution_gifts?select=id,gift_date,donor,donor_formal,amount,gift_type,securities,note,receipt_date&order=gift_date.desc"),
+    sb("contribution_gifts?select=id,gift_date,donor,donor_formal,donor_greeting,donor_address,amount,gift_type,securities,note,receipt_date&order=gift_date.desc"),
   ]);
   const setMap = Object.fromEntries(settings.map(s => [s.key, s.value]));
   const noteMap = {};
@@ -251,6 +251,7 @@ async function fetchLiveData() {
     donations: donations.map(d => ({ id: d.id, year: Number(d.year), donor: d.donor, amount: Number(d.amount) })),
     contributionGifts: (gifts || []).map(g => ({
       id: g.id, giftDate: g.gift_date, donor: g.donor, donorFormal: g.donor_formal,
+      donorGreeting: g.donor_greeting, donorAddress: g.donor_address,
       amount: Number(g.amount), giftType: g.gift_type,
       securities: Array.isArray(g.securities) ? g.securities : [],
       note: g.note, receiptDate: g.receipt_date,
@@ -1853,11 +1854,18 @@ function GrantsView({ narrow }) {
 // =============================================================================
 
 function ContributionsView({ narrow }) {
-  const { donations, contributionGifts } = useData();
-  const { signedIn } = useAuth();
+  const { donations, contributionGifts, refresh } = useData();
+  const { signedIn, email } = useAuth();
+  const [signerIdx, setSignerIdx] = useState(0);   // who signs the receipts
   const [editId, setEditId] = useState(null);
   const [openYear, setOpenYear] = useState(null);
   const totalReceived = sumAmount(donations);
+
+  // Receipts go out over the signer's name — default to whoever is signed in.
+  useEffect(() => {
+    const i = SIGNERS.findIndex(x => x.email && email && x.email.toLowerCase() === email.toLowerCase());
+    if (i >= 0) setSignerIdx(i);
+  }, [email]);
 
   // Individual gifts behind each year. Older years have none — the ledger only ever held a yearly total.
   const giftsByYear = useMemo(() => {
@@ -1910,7 +1918,20 @@ function ContributionsView({ narrow }) {
         <Card style={{ overflow: "hidden" }}>
           <div style={{ padding: "16px 20px", borderBottom: "1px solid #F3ECE3", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
             <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 18 }}>Contribution History</div>
-            {signedIn && <MiniButton kind="edit" onClick={() => setEditId(editId === "new" ? null : "new")}>{editId === "new" ? "Close" : "+ Add"}</MiniButton>}
+            {signedIn && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <label style={{ fontSize: 12, color: "#7C8C8A", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  Receipts signed by
+                  <select value={signerIdx} onChange={e => setSignerIdx(Number(e.target.value))} style={{
+                    fontFamily: FONT_BODY, fontSize: 12, padding: "5px 8px", borderRadius: 6,
+                    border: "1px solid #E2D7C9", background: "#fff", color: INK, cursor: "pointer",
+                  }}>
+                    {SIGNERS.map((sg, i) => <option key={sg.name} value={i}>{sg.name} — {sg.title}</option>)}
+                  </select>
+                </label>
+                <MiniButton kind="edit" onClick={() => setEditId(editId === "new" ? null : "new")}>{editId === "new" ? "Close" : "+ Add"}</MiniButton>
+              </div>
+            )}
           </div>
           <div style={{ maxHeight: 340, overflowY: "auto", overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: signedIn ? 480 : 360 }}>
@@ -1968,9 +1989,12 @@ function ContributionsView({ narrow }) {
                             {g.note ? <span style={{ color: "#9B8E80" }}> · {g.note}</span> : null}
                           </td>
                           <td colSpan={signedIn ? 2 : 1} style={{ padding: "8px 16px", fontSize: 12, whiteSpace: "nowrap" }}>
-                            {g.receiptDate
-                              ? <span style={{ color: "#1F9E6E", fontWeight: 700 }}>receipted {fmtCheckDate(g.receiptDate)}</span>
-                              : <span style={{ color: CORAL, fontWeight: 700 }}>no receipt yet</span>}
+                            <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                              {g.receiptDate
+                                ? <span style={{ color: "#1F9E6E", fontWeight: 700 }}>receipted {fmtCheckDate(g.receiptDate)}</span>
+                                : <span style={{ color: CORAL, fontWeight: 700 }}>no receipt yet</span>}
+                              {signedIn && <GiftReceiptButton gift={g} signer={SIGNERS[signerIdx]} onDone={refresh} />}
+                            </span>
                           </td>
                         </tr>
                       </Fragment>
@@ -2617,6 +2641,95 @@ function GrantReceiptButton({ grant, docs, onChange }) {
       </MiniButton>
     </>
   );
+}
+
+// Donor receipts keep their own letterhead wording ("Inc." without the comma).
+const RECEIPT_FOUNDATION = {
+  name: "Kendacar Foundation Inc.",
+  addressLines: ["627 Leonard Pkwy.", "Crystal Lake, IL   60014"],
+};
+// Receipts state exact figures — never round a number a donor files with their taxes.
+const fmtMoney2 = n => "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// The acknowledgment a donor keeps for their own tax records.
+async function generateDonorReceipt({ gift, signer, receiptDate }) {
+  const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType } = await import("docx");
+  const P = t => new Paragraph({ children: [new TextRun(t || "")] });
+  const addr = String(gift.donorAddress || "").split("\n").map(l => l.trim()).filter(Boolean);
+  const greeting = gift.donorGreeting || gift.donorFormal || gift.donor;
+  const isSec = gift.giftType === "securities" && (gift.securities || []).length > 0;
+
+  const kids = [];
+  kids.push(P(RECEIPT_FOUNDATION.name));
+  RECEIPT_FOUNDATION.addressLines.forEach(l => kids.push(P(l)));
+  kids.push(P(""));
+  kids.push(P(fmtLetterDate(receiptDate)));
+  kids.push(P(""));
+  if (gift.donorFormal) kids.push(P(gift.donorFormal));
+  addr.forEach(l => kids.push(P(l)));
+  kids.push(P(""));
+  kids.push(P("Dear " + greeting + ","));
+  kids.push(P(""));
+
+  if (isSec) {
+    kids.push(P("Thank you for your gift on " + fmtLetterDate(gift.giftDate) +
+      ", as shown below for a total market value of " + fmt(gift.amount) + " to Kendacar Foundation."));
+    kids.push(P(""));
+    const cell = (t, bold) => new TableCell({
+      width: { size: 33, type: WidthType.PERCENTAGE },
+      children: [new Paragraph({ children: [new TextRun({ text: t, bold: !!bold })] })],
+    });
+    kids.push(new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      rows: [
+        new TableRow({ children: [cell("Symbol", true), cell("Quantity", true), cell("Market Value", true)] }),
+      ].concat(gift.securities.map(x => new TableRow({
+        children: [
+          cell(String(x.symbol || "")),
+          cell(x.quantity != null ? Number(x.quantity).toLocaleString("en-US") : ""),
+          cell(fmtMoney2(x.market_value || 0)),
+        ],
+      }))),
+    }));
+    kids.push(P(""));
+  } else {
+    kids.push(P("Thank you for your gift on " + fmtLetterDate(gift.giftDate) +
+      " of " + fmt(gift.amount) + " in cash to Kendacar Foundation."));
+    kids.push(P(""));
+  }
+
+  kids.push(P(RECEIPT_FOUNDATION.name + " is a 501(c)3 organization and your gift is tax deductible."));
+  kids.push(P(""));
+  kids.push(P("Sincerely,"));
+  kids.push(P("")); kids.push(P(""));
+  kids.push(P(signer.name));
+  kids.push(P(signer.title));
+
+  const doc = new Document({
+    styles: { default: { document: { run: { font: "Georgia", size: 22 } } } },
+    sections: [{ children: kids }],
+  });
+  const stamp = String(gift.giftDate || "").replace(/-/g, "");
+  downloadBlob(await Packer.toBlob(doc), stamp + "_Kendacar " + gift.donor + " Donation Receipt.docx");
+}
+
+// Generates the receipt for one gift and stamps it as receipted.
+function GiftReceiptButton({ gift, signer, onDone }) {
+  const { session, setSession } = useAuth();
+  const [busy, setBusy] = useState(false);
+  async function go() {
+    setBusy(true);
+    try {
+      const when = gift.receiptDate || new Date().toISOString().slice(0, 10);
+      await generateDonorReceipt({ gift, signer: signer || SIGNERS[0], receiptDate: when });
+      if (!gift.receiptDate) {
+        await authedWrite(session, setSession, "PATCH", "contribution_gifts?id=eq." + gift.id, { receipt_date: when });
+        if (onDone) await onDone();
+      }
+    } catch (e) { alert("Couldn't build the receipt: " + e.message); }
+    finally { setBusy(false); }
+  }
+  return <MiniButton kind="edit" onClick={go} disabled={busy}>{busy ? "…" : (gift.receiptDate ? "Receipt again" : "Receipt")}</MiniButton>;
 }
 
 // Small button that generates the cover letter for one grant.
