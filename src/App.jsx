@@ -178,6 +178,21 @@ async function uploadPrivateDoc(session, setSession, path, file) {
   return true;
 }
 
+// Remove a filed document. Storage blocks raw row deletes, so this goes through the API.
+async function deletePrivateDoc(session, setSession, path) {
+  const doReq = tok => fetch(SUPABASE_URL + "/storage/v1/object/grant-docs/" + encodeURI(path), {
+    method: "DELETE",
+    headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + tok },
+  });
+  let res = await doReq(session.access_token);
+  if (res.status === 401) {
+    const r = await refreshSession(session);
+    if (r) { setSession(r); saveSession(r); res = await doReq(r.access_token); }
+  }
+  if (!res.ok && res.status !== 404) throw new Error("Couldn't remove the file (" + res.status + ").");
+  return true;
+}
+
 // Short-lived signed link so a private document can be opened without making it public.
 async function signedDocUrl(session, setSession, path) {
   const doReq = tok => fetch(SUPABASE_URL + "/storage/v1/object/sign/grant-docs/" + encodeURI(path), {
@@ -2634,6 +2649,10 @@ function GrantReceiptButton({ grant, docs, onChange }) {
         grant_id: grant.id, kind: "receipt", storage_path: path,
         filename: file.name, content_type: file.type || null,
       });
+      if (doc) {
+        try { await deletePrivateDoc(session, setSession, doc.storage_path); } catch { /* row still goes */ }
+        await authedWrite(session, setSession, "DELETE", "grant_documents?id=eq." + doc.id);
+      }
       if (onChange) await onChange();
     } catch (err) { alert("Upload failed: " + err.message); }
     finally { setBusy(false); }
@@ -2646,16 +2665,31 @@ function GrantReceiptButton({ grant, docs, onChange }) {
     finally { setBusy(false); }
   }
 
-  if (doc) {
-    return <MiniButton kind="save" onClick={open} disabled={busy}>{busy ? "\u2026" : "\u2713 Receipt from org"}</MiniButton>;
+  async function remove() {
+    if (!window.confirm("Remove \"" + (doc.filename || "this document") + "\" from " + grant.org + "?" +
+      "\n\nThe grant stays; only the attached document is deleted.")) return;
+    setBusy(true);
+    try {
+      await deletePrivateDoc(session, setSession, doc.storage_path);
+      await authedWrite(session, setSession, "DELETE", "grant_documents?id=eq." + doc.id);
+      if (onChange) await onChange();
+    } catch (err) { alert(err.message); }
+    finally { setBusy(false); }
   }
+
   return (
     <>
       <input ref={fileRef} type="file" onChange={pick} style={{ display: "none" }}
              accept=".pdf,.png,.jpg,.jpeg,.heic,.doc,.docx" />
-      <MiniButton kind="cancel" onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}>
-        {busy ? "Uploading\u2026" : "\u2190 Receipt from org"}
-      </MiniButton>
+      {doc
+        ? <>
+            <MiniButton kind="save" onClick={open} disabled={busy}>{busy ? "\u2026" : "\u2713 Receipt from org"}</MiniButton>
+            <MiniButton kind="cancel" onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}>Replace</MiniButton>
+            <MiniButton kind="delete" onClick={remove} disabled={busy}>Remove</MiniButton>
+          </>
+        : <MiniButton kind="cancel" onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}>
+            {busy ? "Uploading\u2026" : "\u2190 Receipt from org"}
+          </MiniButton>}
     </>
   );
 }
@@ -2682,7 +2716,10 @@ function GiftDocButton({ gift, docs, onChange }) {
         gift_id: gift.id, kind: "receipt", storage_path: path,
         filename: file.name, content_type: file.type || null,
       });
-      if (doc) await authedWrite(session, setSession, "DELETE", "gift_documents?id=eq." + doc.id);
+      if (doc) {
+        try { await deletePrivateDoc(session, setSession, doc.storage_path); } catch { /* row still goes */ }
+        await authedWrite(session, setSession, "DELETE", "gift_documents?id=eq." + doc.id);
+      }
       if (onChange) await onChange();
     } catch (err) { alert("Upload failed: " + err.message); }
     finally { setBusy(false); }
