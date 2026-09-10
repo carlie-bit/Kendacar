@@ -1621,6 +1621,17 @@ function GrantsView({ narrow }) {
     setSortDir(key === "org" || key === "category" ? "asc" : "desc");  // names read better A-Z
   };
 
+  const [folders, setFolders] = useState({});
+  const loadFolders = async () => {
+    if (!signedIn) { setFolders({}); return; }
+    try {
+      const rows = await authedGet(session, setSession, "tax_year_folders?select=year,url");
+      const m = {}; rows.forEach(r => { m[r.year] = r.url; });
+      setFolders(m);
+    } catch { /* link simply won't show */ }
+  };
+  useEffect(() => { loadFolders(); /* eslint-disable-next-line */ }, [signedIn]);
+
   // One query for every grant's paperwork, indexed by grant so each row is cheap.
   const loadDocs = async () => {
     if (!signedIn) { setDocs({}); return; }
@@ -1694,6 +1705,11 @@ function GrantsView({ narrow }) {
         {hasFilters && (
           <button onClick={() => { setYearFilter("All Years"); setOrgFilter("All Organizations"); setCatFilter("All Categories"); }}
             style={{ background: "none", border: "1px solid #E2D7C9", borderRadius: 6, padding: "7px 14px", fontSize: 12, color: "#7C8C8A", cursor: "pointer", fontFamily: "'Nunito Sans', sans-serif" }}>Clear</button>
+        )}
+        {signedIn && yearFilter !== "All Years" && (
+          <div style={{ marginLeft: "auto", alignSelf: "center" }}>
+            <TaxFolderLink year={Number(yearFilter)} url={folders[yearFilter]} onChange={loadFolders} />
+          </div>
         )}
       </Card>
 
@@ -1876,6 +1892,17 @@ function ContributionsView({ narrow }) {
   const [openYear, setOpenYear] = useState(null);
   const totalReceived = sumAmount(donations);
 
+  const [folders, setFolders] = useState({});
+  const loadFolders = async () => {
+    if (!signedIn) { setFolders({}); return; }
+    try {
+      const rows = await authedGet(session, setSession, "tax_year_folders?select=year,url");
+      const m = {}; rows.forEach(r => { m[r.year] = r.url; });
+      setFolders(m);
+    } catch { /* link simply won't show */ }
+  };
+  useEffect(() => { loadFolders(); /* eslint-disable-next-line */ }, [signedIn]);
+
   // Documents filed against each gift, indexed by gift.
   const [giftDocs, setGiftDocs] = useState({});
   const loadGiftDocs = async () => {
@@ -1979,7 +2006,14 @@ function ContributionsView({ narrow }) {
                   ) : (
                   <Fragment key={d.id ?? d.donor + d.year + i}>
                   <tr style={{ borderBottom: "1px solid #F3ECE3", background: i % 2 === 0 ? "#fff" : "#FCF7F1" }}>
-                    <td style={{ padding: "10px 16px", color: "#7C8C8A" }}>{d.year}</td>
+                    <td style={{ padding: "10px 16px", color: "#7C8C8A" }}>
+                      <div>{d.year}</div>
+                      {signedIn && (folders[d.year] || openYear === d.year) && (
+                        <div style={{ marginTop: 3 }}>
+                          <TaxFolderLink year={d.year} url={folders[d.year]} onChange={loadFolders} compact />
+                        </div>
+                      )}
+                    </td>
                     <td style={{ padding: "10px 16px", fontWeight: 500 }}>{d.donor}</td>
                     <td style={{ padding: "10px 16px", fontWeight: 700, color: TEAL }}>{fmt(d.amount)}</td>
                     <td style={{ padding: "10px 16px", whiteSpace: "nowrap" }}>
@@ -2561,6 +2595,8 @@ const FOUNDATION = {
 const SIGNERS = [
   { name: "Carlie Dobbeck",    title: "Trustee",   email: "cdobbeck@gmail.com", phone: "(815)355-6882" },
   { name: "Christine Smith",   title: "President", email: "pabsmith28@gmail.com", phone: "" },
+  { name: "David P. Smith, III", title: "Treasurer", email: "dave.smith@compositesone.com", phone: "" },
+  { name: "David P. Smith, Jr.", title: "Trustee",   email: "dp.smith@stantine.com", phone: "" },
   { name: "Kendra S. Rogocki", title: "Secretary", email: "kendra.rogocki@stantine.com", phone: "" },
 ];
 const defaultSigner = email => SIGNERS.find(s => s.email && email && s.email.toLowerCase() === email.toLowerCase()) || SIGNERS[0];
@@ -2839,6 +2875,40 @@ function GiftReceiptButton({ gift, signer, onDone }) {
     finally { setBusy(false); }
   }
   return <MiniButton kind="edit" onClick={go} disabled={busy}>{busy ? "…" : (gift.receiptDate ? "Regenerate \u2192" : "Receipt for donor \u2192")}</MiniButton>;
+}
+
+// Link straight to a tax year's Drive folder, so a preparer isn't hunting for paperwork.
+function TaxFolderLink({ year, url, onChange, compact }) {
+  const { session, setSession } = useAuth();
+  const [busy, setBusy] = useState(false);
+  async function edit() {
+    const next = window.prompt("Google Drive folder link for " + year + " (leave blank to remove):", url || "");
+    if (next === null) return;
+    const v = next.trim();
+    setBusy(true);
+    try {
+      if (!v) await authedWrite(session, setSession, "DELETE", "tax_year_folders?year=eq." + year);
+      else if (url) await authedWrite(session, setSession, "PATCH", "tax_year_folders?year=eq." + year, { url: v, updated_at: new Date().toISOString() });
+      else await authedWrite(session, setSession, "POST", "tax_year_folders", { year, url: v });
+      if (onChange) await onChange();
+    } catch (e) { alert(e.message); }
+    finally { setBusy(false); }
+  }
+  const linkStyle = { color: TEAL, fontWeight: 700, fontSize: compact ? 11.5 : 12.5, textDecoration: "none", fontFamily: FONT_BODY };
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+      {url && (
+        <a href={url} target="_blank" rel="noopener noreferrer" style={linkStyle}
+           title={"Open the " + year + " folder in Google Drive"}>
+          {year} tax folder &rarr;
+        </a>
+      )}
+      <button onClick={edit} disabled={busy} style={{
+        background: "none", border: "none", padding: 0, cursor: busy ? "default" : "pointer",
+        color: "#9B8E80", fontSize: compact ? 11 : 11.5, fontFamily: FONT_BODY, textDecoration: "underline",
+      }}>{busy ? "\u2026" : (url ? "edit" : "+ add " + year + " folder link")}</button>
+    </span>
+  );
 }
 
 // Small button that generates the cover letter for one grant.
