@@ -880,6 +880,7 @@ function GrantEditRow({ row, onDone, narrow }) {
       <td style={{ padding: "8px 12px" }}><EdInput type="number" value={amount} onChange={setAmount} placeholder="Amount" /></td>
       <td style={{ padding: "8px 12px" }}><EdInput type="date" value={checkDate} onChange={setCheckDate} /></td>
       <td style={{ padding: "8px 12px" }}><EdInput value={checkNumber} onChange={setCheckNumber} placeholder="Check #" /></td>
+      <td style={{ padding: "8px 12px" }} />
       <td style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           <MiniButton kind="save" onClick={save} disabled={busy}>{busy ? "…" : "Save"}</MiniButton>
@@ -1693,7 +1694,7 @@ function GrantsView({ narrow }) {
   const hasFilters = yearFilter !== "All Years" || orgFilter !== "All Organizations" || catFilter !== "All Categories";
 
   return (
-    <div style={{ maxWidth: 1140, margin: "0 auto", padding: narrow ? "28px 16px" : "36px 40px" }}>
+    <div style={{ maxWidth: 1440, margin: "0 auto", padding: narrow ? "28px 16px" : "36px 40px" }}>
       <SectionTitle title="Grants Made" sub="Every grant since 2001, filterable by year, organization, and focus area" />
 
       {/* Filters */}
@@ -1755,7 +1756,7 @@ function GrantsView({ narrow }) {
               <thead>
                 <tr style={{ background: "#FFF8F2", borderBottom: "1px solid #EFE7DD" }}>
                   {[["year", "Year"], ["org", "Organization"], ["category", "Category"], ["amount", "Amount"], ["date", "Check Date"], ["check", "Check #"]]
-                    .concat(signedIn ? [["", "Actions"]] : []).map(([key, label]) => (
+                    .concat(signedIn ? [["", "Tax folder"], ["", "Actions"]] : []).map(([key, label]) => (
                     <th key={label} style={{ padding: "12px 16px", textAlign: "left", fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#7C8C8A", whiteSpace: "nowrap" }}>
                       {key ? (
                         <button onClick={() => toggleSort(key)} title={"Sort by " + label} style={{
@@ -1774,7 +1775,7 @@ function GrantsView({ narrow }) {
               </thead>
               <tbody>
                 {signedIn && editId === "new" && <GrantEditRow row={null} onDone={() => setEditId(null)} narrow={narrow} />}
-                {filtered.length === 0 && <tr><td colSpan={signedIn ? 7 : 6} style={{ padding: 32, textAlign: "center", color: "#7C8C8A" }}>No grants match your filters.</td></tr>}
+                {filtered.length === 0 && <tr><td colSpan={signedIn ? 8 : 6} style={{ padding: 32, textAlign: "center", color: "#7C8C8A" }}>No grants match your filters.</td></tr>}
                 {filtered.slice().sort(compareGrants).map((g, i) => (
                   editId === g.id && g.id != null ? (
                     <GrantEditRow key={"edit" + g.id} row={g} onDone={() => setEditId(null)} narrow={narrow} />
@@ -1789,9 +1790,18 @@ function GrantsView({ narrow }) {
                     <td style={{ padding: "11px 16px", color: "#7C8C8A", whiteSpace: "nowrap" }}>{g.checkDate ? fmtCheckDate(g.checkDate) : <span style={{ color: "#C8BBA8" }}>—</span>}</td>
                     <td style={{ padding: "11px 16px", color: "#7C8C8A", whiteSpace: "nowrap" }}>{g.checkNumber ? "#" + g.checkNumber : <span style={{ color: "#C8BBA8" }}>—</span>}</td>
                     {signedIn && (
-                      <td style={{ padding: "11px 16px" }}>
+                      <td style={{ padding: "11px 16px", whiteSpace: "nowrap" }}>
+                        {folders[g.year]
+                          ? <a href={folders[g.year]} target="_blank" rel="noopener noreferrer"
+                               title={"Open the " + g.year + " folder in Google Drive"}
+                               style={{ color: TEAL, fontWeight: 700, fontSize: 12, textDecoration: "none", fontFamily: FONT_BODY }}>{g.year} folder &rarr;</a>
+                          : <span style={{ color: "#C8BBA8", fontSize: 11.5 }}>—</span>}
+                      </td>
+                    )}
+                    {signedIn && (
+                      <td style={{ padding: "11px 16px", whiteSpace: "nowrap" }}>
                         {g.id != null
-                          ? <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          ? <div style={{ display: "flex", gap: 6, flexWrap: "nowrap", alignItems: "center" }}>
                               <MiniButton kind="edit" onClick={() => setEditId(g.id)}>Edit</MiniButton>
                               <GrantLetterButton grant={g} signer={SIGNERS[signerIdx]} />
                               <GrantReceiptButton grant={g} docs={docs[g.id]} onChange={loadDocs} />
