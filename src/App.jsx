@@ -2724,7 +2724,7 @@ function GrantReceiptButton({ grant, docs, onChange }) {
             <MiniButton kind="delete" onClick={remove} disabled={busy}>Remove</MiniButton>
           </>
         : <MiniButton kind="cancel" onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}>
-            {busy ? "Uploading\u2026" : "\u2190 Receipt from org"}
+            {busy ? "Uploading\u2026" : "Attach receipt from org"}
           </MiniButton>}
     </>
   );
