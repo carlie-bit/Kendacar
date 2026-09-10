@@ -1694,7 +1694,7 @@ function GrantsView({ narrow }) {
   const hasFilters = yearFilter !== "All Years" || orgFilter !== "All Organizations" || catFilter !== "All Categories";
 
   return (
-    <div style={{ maxWidth: 1440, margin: "0 auto", padding: narrow ? "28px 16px" : "36px 40px" }}>
+    <div style={{ maxWidth: 1680, margin: "0 auto", padding: narrow ? "28px 16px" : "36px 40px" }}>
       <SectionTitle title="Grants Made" sub="Every grant since 2001, filterable by year, organization, and focus area" />
 
       {/* Filters */}
@@ -1752,7 +1752,7 @@ function GrantsView({ narrow }) {
             </div>
           )}
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: signedIn ? 1060 : 620 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: signedIn ? 1180 : 620 }}>
               <thead>
                 <tr style={{ background: "#FFF8F2", borderBottom: "1px solid #EFE7DD" }}>
                   {[["year", "Year"], ["org", "Organization"], ["category", "Category"], ["amount", "Amount"], ["date", "Check Date"], ["check", "Check #"]]
@@ -2730,8 +2730,8 @@ function GrantReceiptButton({ grant, docs, onChange }) {
       {doc
         ? <>
             <MiniButton kind="save" onClick={open} disabled={busy} title="Open the acknowledgment this organization sent back">{busy ? "\u2026" : "\u2713 Receipt from org"}</MiniButton>
-            <MiniButton kind="cancel" onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}>Replace</MiniButton>
-            <MiniButton kind="delete" onClick={remove} disabled={busy}>Remove</MiniButton>
+            <button onClick={() => fileRef.current && fileRef.current.click()} disabled={busy} style={subAction(false)} title="Upload a different file in its place">Replace</button>
+            <button onClick={remove} disabled={busy} style={subAction(true)} title="Delete this attachment">Remove</button>
           </>
         : <MiniButton kind="cancel" onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}>
             {busy ? "Uploading\u2026" : "Attach receipt from org"}
@@ -2741,6 +2741,13 @@ function GrantReceiptButton({ grant, docs, onChange }) {
 }
 
 const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+// Replace / Remove are secondary — quiet links keep the row narrow and the hierarchy honest.
+const subAction = danger => ({
+  background: "none", border: "none", padding: "0 2px", cursor: "pointer",
+  color: danger ? "#B5451B" : "#7C8C8A", fontSize: 11.5, fontFamily: FONT_BODY,
+  textDecoration: "underline", whiteSpace: "nowrap",
+});
 
 // Upload or open the receipt filed against a gift.
 function GiftDocButton({ gift, docs, onChange }) {
@@ -2783,7 +2790,7 @@ function GiftDocButton({ gift, docs, onChange }) {
       {doc
         ? <>
             <MiniButton kind="save" onClick={open} disabled={busy}>{busy ? "\u2026" : "\u2713 On file"}</MiniButton>
-            <MiniButton kind="cancel" onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}>Replace</MiniButton>
+            <button onClick={() => fileRef.current && fileRef.current.click()} disabled={busy} style={subAction(false)} title="Upload a different file in its place">Replace</button>
           </>
         : <MiniButton kind="cancel" onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}>
             {busy ? "\u2026" : "Attach signed copy"}
