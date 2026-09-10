@@ -1720,11 +1720,11 @@ function GrantsView({ narrow }) {
             </div>
           )}
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: signedIn ? 760 : 620 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: signedIn ? 940 : 620 }}>
               <thead>
                 <tr style={{ background: "#FFF8F2", borderBottom: "1px solid #EFE7DD" }}>
                   {[["year", "Year"], ["org", "Organization"], ["category", "Category"], ["amount", "Amount"], ["date", "Check Date"], ["check", "Check #"]]
-                    .concat(signedIn ? [["", "Edit"]] : []).map(([key, label]) => (
+                    .concat(signedIn ? [["", "Actions"]] : []).map(([key, label]) => (
                     <th key={label} style={{ padding: "12px 16px", textAlign: "left", fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#7C8C8A", whiteSpace: "nowrap" }}>
                       {key ? (
                         <button onClick={() => toggleSort(key)} title={"Sort by " + label} style={{
@@ -2647,14 +2647,14 @@ function GrantReceiptButton({ grant, docs, onChange }) {
   }
 
   if (doc) {
-    return <MiniButton kind="save" onClick={open} disabled={busy}>{busy ? "\u2026" : "\u2713 Receipt"}</MiniButton>;
+    return <MiniButton kind="save" onClick={open} disabled={busy}>{busy ? "\u2026" : "\u2713 Receipt from org"}</MiniButton>;
   }
   return (
     <>
       <input ref={fileRef} type="file" onChange={pick} style={{ display: "none" }}
              accept=".pdf,.png,.jpg,.jpeg,.heic,.doc,.docx" />
       <MiniButton kind="cancel" onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}>
-        {busy ? "Uploading\u2026" : "+ Receipt"}
+        {busy ? "Uploading\u2026" : "\u2190 Receipt from org"}
       </MiniButton>
     </>
   );
@@ -2801,7 +2801,7 @@ function GiftReceiptButton({ gift, signer, onDone }) {
     } catch (e) { alert("Couldn't build the receipt: " + e.message); }
     finally { setBusy(false); }
   }
-  return <MiniButton kind="edit" onClick={go} disabled={busy}>{busy ? "…" : (gift.receiptDate ? "Receipt again" : "Receipt")}</MiniButton>;
+  return <MiniButton kind="edit" onClick={go} disabled={busy}>{busy ? "…" : (gift.receiptDate ? "Regenerate \u2192" : "Receipt for donor \u2192")}</MiniButton>;
 }
 
 // Small button that generates the cover letter for one grant.
@@ -2819,7 +2819,7 @@ function GrantLetterButton({ grant, signer }) {
     catch (e) { alert("Couldn't build the letter: " + e.message); }
     finally { setBusy(false); }
   }
-  return <MiniButton kind="edit" onClick={go} disabled={busy}>{busy ? "…" : "Letter"}</MiniButton>;
+  return <MiniButton kind="edit" onClick={go} disabled={busy}>{busy ? "…" : "Letter to org \u2192"}</MiniButton>;
 }
 
 // Format a YYYY-MM-DD check date without timezone drift.
