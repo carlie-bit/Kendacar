@@ -824,7 +824,7 @@ function EdSelect({ value, onChange, options }) {
   );
 }
 
-function MiniButton({ onClick, children, kind, disabled }) {
+function MiniButton({ onClick, children, kind, disabled, title }) {
   const colors = {
     save:   { bg: TEAL, fg: "#fff", bd: TEAL },
     cancel: { bg: "#fff", fg: "#7C8C8A", bd: "#E2D7C9" },
@@ -832,7 +832,7 @@ function MiniButton({ onClick, children, kind, disabled }) {
     edit:   { bg: "#FBF4EC", fg: TEAL, bd: "#EFE7DD" },
   }[kind] || { bg: "#fff", fg: TEAL, bd: "#E2D7C9" };
   return (
-    <button onClick={onClick} disabled={disabled} style={{
+    <button onClick={onClick} disabled={disabled} title={title} style={{
       background: colors.bg, color: colors.fg, border: "1px solid " + colors.bd, borderRadius: 6,
       padding: "5px 11px", fontSize: 12, fontWeight: 600, cursor: disabled ? "default" : "pointer",
       opacity: disabled ? 0.5 : 1, fontFamily: "'Nunito Sans', sans-serif",
@@ -1735,7 +1735,7 @@ function GrantsView({ narrow }) {
             </div>
           )}
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: signedIn ? 940 : 620 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: signedIn ? 1060 : 620 }}>
               <thead>
                 <tr style={{ background: "#FFF8F2", borderBottom: "1px solid #EFE7DD" }}>
                   {[["year", "Year"], ["org", "Organization"], ["category", "Category"], ["amount", "Amount"], ["date", "Check Date"], ["check", "Check #"]]
@@ -2683,7 +2683,7 @@ function GrantReceiptButton({ grant, docs, onChange }) {
              accept=".pdf,.png,.jpg,.jpeg,.heic,.doc,.docx" />
       {doc
         ? <>
-            <MiniButton kind="save" onClick={open} disabled={busy}>{busy ? "\u2026" : "\u2713 Receipt from org"}</MiniButton>
+            <MiniButton kind="save" onClick={open} disabled={busy} title="Open the acknowledgment this organization sent back">{busy ? "\u2026" : "\u2713 Receipt from org"}</MiniButton>
             <MiniButton kind="cancel" onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}>Replace</MiniButton>
             <MiniButton kind="delete" onClick={remove} disabled={busy}>Remove</MiniButton>
           </>
@@ -2856,7 +2856,12 @@ function GrantLetterButton({ grant, signer }) {
     catch (e) { alert("Couldn't build the letter: " + e.message); }
     finally { setBusy(false); }
   }
-  return <MiniButton kind="edit" onClick={go} disabled={busy}>{busy ? "…" : "Letter to org \u2192"}</MiniButton>;
+  return (
+    <MiniButton kind="edit" onClick={go} disabled={busy}
+      title="Cover letter to print and mail in the same envelope as the check">
+      {busy ? "…" : "Letter to send with check \u2192"}
+    </MiniButton>
+  );
 }
 
 // Format a YYYY-MM-DD check date without timezone drift.
