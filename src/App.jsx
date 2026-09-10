@@ -2682,6 +2682,7 @@ function GiftDocButton({ gift, docs, onChange }) {
         gift_id: gift.id, kind: "receipt", storage_path: path,
         filename: file.name, content_type: file.type || null,
       });
+      if (doc) await authedWrite(session, setSession, "DELETE", "gift_documents?id=eq." + doc.id);
       if (onChange) await onChange();
     } catch (err) { alert("Upload failed: " + err.message); }
     finally { setBusy(false); }
@@ -2692,14 +2693,18 @@ function GiftDocButton({ gift, docs, onChange }) {
     catch (err) { alert(err.message); }
     finally { setBusy(false); }
   }
-  if (doc) return <MiniButton kind="save" onClick={open} disabled={busy}>{busy ? "\u2026" : "\u2713 On file"}</MiniButton>;
   return (
     <>
       <input ref={fileRef} type="file" onChange={pick} style={{ display: "none" }}
              accept=".pdf,.doc,.docx,.png,.jpg,.jpeg" />
-      <MiniButton kind="cancel" onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}>
-        {busy ? "\u2026" : "Attach"}
-      </MiniButton>
+      {doc
+        ? <>
+            <MiniButton kind="save" onClick={open} disabled={busy}>{busy ? "\u2026" : "\u2713 On file"}</MiniButton>
+            <MiniButton kind="cancel" onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}>Replace</MiniButton>
+          </>
+        : <MiniButton kind="cancel" onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}>
+            {busy ? "\u2026" : "Attach signed copy"}
+          </MiniButton>}
     </>
   );
 }
@@ -2788,15 +2793,7 @@ function GiftReceiptButton({ gift, signer, onDone }) {
     setBusy(true);
     try {
       const when = gift.receiptDate || new Date().toISOString().slice(0, 10);
-      const { blob, filename } = await generateDonorReceipt({ gift, signer: signer || SIGNERS[0], receiptDate: when });
-      // Keep the issued receipt on the site, not only in the browser's downloads folder.
-      try {
-        const path = "gifts/" + gift.id + "/" + Date.now() + "_" + filename.replace(/[^A-Za-z0-9._-]+/g, "_");
-        await uploadPrivateDoc(session, setSession, path, new File([blob], filename, { type: DOCX_MIME }));
-        await authedWrite(session, setSession, "POST", "gift_documents", {
-          gift_id: gift.id, kind: "receipt", storage_path: path, filename, content_type: DOCX_MIME,
-        });
-      } catch (up) { console.warn("receipt saved locally but not filed:", up); }
+      await generateDonorReceipt({ gift, signer: signer || SIGNERS[0], receiptDate: when });
       if (!gift.receiptDate) {
         await authedWrite(session, setSession, "PATCH", "contribution_gifts?id=eq." + gift.id, { receipt_date: when });
       }
