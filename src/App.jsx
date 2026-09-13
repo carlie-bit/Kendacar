@@ -230,7 +230,7 @@ async function fetchLiveData() {
     sb("donations?select=id,year,donor,amount&order=year.desc"),
     sb("investment_assets?select=id,name,value,sort_order&order=sort_order"),
     sb("settings?select=key,value"),
-    sb("grantee_notes?select=org,display_name,contact,contact_role,contact_email,website,description,community,note,core_outcomes,mailing_address,phone"),
+    sb("grantee_notes?select=org,display_name,contact,contact_role,contact_email,website,description,community,note,core_outcomes,mailing_address,phone,ein"),
     sb("grantee_updates?select=id,org,title,body,author,photos,created_at&order=created_at.desc"),
     sb("grantee_programs?select=id,org,name,purpose,metrics,sort_order,status&order=sort_order"),
     sb("contribution_gifts?select=id,gift_date,donor,donor_formal,donor_greeting,donor_address,amount,gift_type,securities,note,receipt_date&order=gift_date.desc"),
@@ -240,7 +240,7 @@ async function fetchLiveData() {
   notes.forEach(n => { noteMap[n.org] = {
     displayName: n.display_name, contact: n.contact, contactRole: n.contact_role,
     contactEmail: n.contact_email, website: n.website, description: n.description,
-    community: n.community, note: n.note, mailingAddress: n.mailing_address, phone: n.phone,
+    community: n.community, note: n.note, mailingAddress: n.mailing_address, phone: n.phone, ein: n.ein,
     coreOutcomes: n.core_outcomes || null,
   }; });
   const updateMap = {};
@@ -2261,7 +2261,7 @@ function GranteeProfileEditor({ org, note, exists, onDone }) {
     contact: note?.contact || "", contact_role: note?.contactRole || "",
     contact_email: note?.contactEmail || "", community: note?.community || "",
     description: note?.description || "", mailing_address: note?.mailingAddress || "",
-    phone: note?.phone || "",
+    phone: note?.phone || "", ein: note?.ein || "",
   });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -2296,6 +2296,7 @@ function GranteeProfileEditor({ org, note, exists, onDone }) {
         {fld("Contact email", "contact_email", "name@org.org")}
         {fld("Home community", "community", "e.g. Port Austin, MI")}
         {fld("Phone", "phone", "772.562.9860")}
+        {fld("EIN", "ein", "65-0017325")}
       </div>
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontFamily: FONT_BODY, fontWeight: 700, fontSize: 12, color: INK, marginBottom: 4 }}>Mailing address</div>
@@ -3072,6 +3073,7 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
               <div style={{ fontSize: 13, color: "#7C8C8A", fontFamily: FONT_BODY, marginTop: 10, lineHeight: 1.5 }}>
                 {String(note.mailingAddress || "").split("\n").filter(l => l.trim()).map((l, i) => <div key={i}>{l}</div>)}
                 {note.phone && <div>{note.phone}</div>}
+                {note.ein && <div style={{ marginTop: 4 }}>EIN <strong style={{ color: INK }}>{note.ein}</strong></div>}
               </div>
             )}
           </div>
