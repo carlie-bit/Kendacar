@@ -2090,7 +2090,7 @@ function ContributionsView({ narrow }) {
 //  GRANTEES DIRECTORY + DETAIL
 // =============================================================================
 
-function buildGranteeIndex(grants) {
+function buildGranteeIndex(grants, notes) {
   const map = {};
   grants.forEach(g => {
     const key = normalizeOrg(g.org);
@@ -2100,17 +2100,30 @@ function buildGranteeIndex(grants) {
     map[key].years.add(g.year);
     map[key].grants.push(g);
   });
-  return Object.values(map).map(o => ({
+  const out = Object.values(map).map(o => ({
     ...o,
     firstYear: Math.min(...o.years),
     lastYear: Math.max(...o.years),
     yearCount: o.years.size,
   })).sort((a, b) => b.total - a.total);
+  // Organizations with a profile but no grant yet, so details can be checked before the check is written.
+  if (notes) {
+    const seen = new Set(out.map(o => o.org));
+    Object.keys(notes).forEach(org => {
+      const key = normalizeOrg(org);
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push({ org: key, total: 0, count: 0, years: new Set(), category: null, grants: [],
+                   firstYear: null, lastYear: null, yearCount: 0, pending: true });
+      }
+    });
+  }
+  return out;
 }
 
 function GranteesDirectory({ goGrantee, narrow }) {
   const { grants, granteeNotes } = useData();
-  const index = useMemo(() => buildGranteeIndex(grants), [grants]);
+  const index = useMemo(() => buildGranteeIndex(grants, granteeNotes), [grants, granteeNotes]);
   const nameOf = o => (granteeNotes[o.org] && granteeNotes[o.org].displayName) || o.org;
   const [q, setQ] = useState("");
   const list = index.filter(o => nameOf(o).toLowerCase().includes(q.toLowerCase()) || o.org.toLowerCase().includes(q.toLowerCase()));
@@ -3012,7 +3025,7 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
   const { grants, granteeNotes, granteeUpdates, granteePrograms } = useData();
   const { signedIn, session, setSession } = useAuth();
   const { refresh } = useData();
-  const index = useMemo(() => buildGranteeIndex(grants), [grants]);
+  const index = useMemo(() => buildGranteeIndex(grants, granteeNotes), [grants, granteeNotes]);
   const rec = index.find(o => o.org === org);
   const note = granteeNotes[org];
   const updates = granteeUpdates[org] || [];
@@ -3048,7 +3061,7 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
               {note?.community && <span style={{ background: SUN + "26", color: "#9A7B1E", borderRadius: 20, padding: "3px 12px", fontSize: 11, fontWeight: 700 }}>{note.community}</span>}
             </div>
             <h2 style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: narrow ? 26 : 32, margin: "12px 0 4px", color: INK, lineHeight: 1.05 }}>{(note && note.displayName) || rec.org}</h2>
-            <div style={{ fontSize: 13, color: "#7C8C8A", fontFamily: FONT_BODY }}>Grantee #{rank} by total support &middot; supported across {rec.yearCount} year{rec.yearCount > 1 ? "s" : ""}</div>
+            <div style={{ fontSize: 13, color: "#7C8C8A", fontFamily: FONT_BODY }}>{rec.pending ? "No grants yet \u2014 profile ready for the first one" : "Grantee #" + rank + " by total support \u00b7 supported across " + rec.yearCount + " year" + (rec.yearCount > 1 ? "s" : "")}</div>
             {note && note.website && (
               <a href={note.website} target="_blank" rel="noopener noreferrer" style={{ display: "inline-block", marginTop: 10, color: TEAL, fontSize: 13.5, fontWeight: 700, textDecoration: "none", fontFamily: FONT_BODY }}>Visit website &rarr;</a>
             )}
@@ -3056,7 +3069,7 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
           <div style={{ textAlign: "right" }}>
             <div style={{ fontSize: 11, fontFamily: FONT_BODY, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "#7C8C8A" }}>Total Received</div>
             <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 40, color: TEAL, lineHeight: 1 }}>{fmt(rec.total)}</div>
-            <div style={{ fontSize: 12, color: "#7C8C8A", marginTop: 4 }}>{rec.count} grant{rec.count > 1 ? "s" : ""} &middot; {rec.firstYear}&ndash;{rec.lastYear}</div>
+            <div style={{ fontSize: 12, color: "#7C8C8A", marginTop: 4 }}>{rec.pending ? "awaiting first grant" : rec.count + " grant" + (rec.count > 1 ? "s" : "") + " \u00b7 " + rec.firstYear + "\u2013" + rec.lastYear}</div>
             {signedIn && !editingProfile && <div style={{ marginTop: 10 }}><MiniButton kind="edit" onClick={() => setEditingProfile(true)}>Edit profile</MiniButton></div>}
           </div>
         </div>
