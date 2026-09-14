@@ -3947,8 +3947,37 @@ function AccessView({ narrow }) {
   );
 }
 
+// =============================================================================
+//  PAGE ADDRESSES
+//  Every page has its own link (kendacar.org/grants, /grantees/youth-guidance) so it
+//  can be shared. Someone signed out sees the sign-in first, then lands on that page.
+// =============================================================================
+
+const VIEW_PATHS = {
+  pulse: "/", investments: "/investments", grants: "/grants", contributions: "/contributions",
+  grantees: "/grantees", queue: "/review", "request-grant": "/recommend-grant", contribute: "/contribute", access: "/access",
+};
+const VIEW_TITLES = {
+  investments: "Investments", grants: "Grants Made", contributions: "Contributions", grantees: "Grantees",
+  queue: "Review", "request-grant": "Recommend a Grant", contribute: "Make a Contribution", access: "Access",
+};
+const LEGACY_HASHES = { "#request-grant": "request-grant", "#contribute": "contribute", "#review": "queue", "#queue": "queue" };
+const orgSlug = org => String(org || "").toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+
+function routeFromLocation() {
+  const legacy = LEGACY_HASHES[window.location.hash];
+  if (legacy) return { view: legacy, slug: null };
+  const parts = window.location.pathname.split("/").filter(Boolean).map(x => { try { return decodeURIComponent(x); } catch { return x; } });
+  if (parts[0] === "grantees" && parts[1]) return { view: "grantee-detail", slug: orgSlug(parts[1]) };
+  if (parts[0] === "request-grant") return { view: "request-grant", slug: null };
+  const view = Object.keys(VIEW_PATHS).find(v => VIEW_PATHS[v] === "/" + (parts[0] || ""));
+  return { view: view || "pulse", slug: null };
+}
+const pathFor = (view, org) => (view === "grantee-detail" && org ? "/grantees/" + orgSlug(org) : VIEW_PATHS[view] || "/");
+
 export default function App() {
-  const [view, setView] = useState("pulse");
+  const [view, setView] = useState(() => routeFromLocation().view);
+  const [routeSlug, setRouteSlug] = useState(() => routeFromLocation().slug); // from a shared /grantees/<name> link
   const [selectedOrg, setSelectedOrg] = useState(null);
   const [data, setData] = useState(EMPTY_DATA);
   const [loaded, setLoaded] = useState(false);
@@ -3983,9 +4012,8 @@ export default function App() {
     const fromHash = sessionFromHash();
     const saved = fromHash || loadSession();
     if (fromHash) { saveSession(fromHash); if (fromHash.type === "recovery") setResetting(true); }
-    const h = window.location.hash.replace("#", "");
-    if (h === "request-grant" || h === "contribute") setView(h);
-    else if (h === "review" || h === "queue") setView("queue");
+    // Old #review / #contribute links still work; move them onto their page address.
+    if (LEGACY_HASHES[window.location.hash]) history.replaceState(null, "", pathFor(LEGACY_HASHES[window.location.hash]));
     if (!saved) { setRestoring(false); return; }
     if (saved.expires_at && saved.expires_at < Date.now()) {
       refreshSession(saved).then(r => {
@@ -3994,6 +4022,21 @@ export default function App() {
       });
     } else { setSession(saved); setRestoring(false); }
   }, []);
+
+  // Back and forward buttons move between pages.
+  useEffect(() => {
+    const onPop = () => { const r = routeFromLocation(); setView(r.view); setRouteSlug(r.slug); setSelectedOrg(null); window.scrollTo({ top: 0 }); };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // Name the browser tab after the page, so shared and bookmarked links read clearly.
+  useEffect(() => {
+    const page = view === "grantee-detail"
+      ? (selectedOrg ? orgLabel(selectedOrg, data.granteeNotes) : "Grantee")
+      : VIEW_TITLES[view];
+    document.title = session && page ? page + " · Kendacar" : "Kendacar Foundation";
+  }, [view, selectedOrg, session, data]);
 
   // When someone signs in, ask the database what they may do, then load what they may see.
   const who = session ? session.email : "";
@@ -4015,13 +4058,18 @@ export default function App() {
   }, [who, attempt]);
 
   function nav(v) {
-    setView(v); setSelectedOrg(null);
-    const hashFor = (v === "request-grant" || v === "contribute") ? v : (v === "queue" ? "review" : "");
-    history.replaceState(null, "", window.location.pathname + window.location.search + (hashFor ? "#" + hashFor : ""));
+    setView(v); setSelectedOrg(null); setRouteSlug(null);
+    const path = pathFor(v);
+    if (window.location.pathname !== path || window.location.hash) history.pushState(null, "", path);
     window.scrollTo({ top: 0 });
   }
-  function goGrantee(org) { setSelectedOrg(org); setView("grantee-detail"); window.scrollTo({ top: 0 }); }
-  const signOut = () => { saveSession(null); setSession(null); setView("pulse"); };
+  function goGrantee(org) {
+    setSelectedOrg(org); setRouteSlug(null); setView("grantee-detail");
+    const path = pathFor("grantee-detail", org);
+    if (window.location.pathname !== path) history.pushState(null, "", path);
+    window.scrollTo({ top: 0 });
+  }
+  const signOut = () => { saveSession(null); setSession(null); nav("pulse"); };
 
   const auth = {
     session, setSession,
@@ -4058,7 +4106,13 @@ export default function App() {
 
   const isAdmin = auth.signedIn;
   // Submitting and processing are family actions; advisors land on the dashboard instead.
-  const current = !isAdmin && ["queue", "request-grant", "contribute", "access"].includes(view) ? "pulse" : view;
+  // A shared /grantees/<name> link: find that organization among the loaded records.
+  const detailOrg = selectedOrg || (routeSlug
+    ? [...Object.keys(data.granteeNotes || {}), ...(data.grants || []).map(g => normalizeOrg(g.org))].find(o => orgSlug(o) === routeSlug) || null
+    : null);
+  const current = !isAdmin && ["queue", "request-grant", "contribute", "access"].includes(view) ? "pulse"
+    : view === "grantee-detail" && loaded && !detailOrg ? "grantees"
+    : view;
   const barLink = { background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 12, fontWeight: 700, textDecoration: "underline" };
 
   return shell(
@@ -4082,7 +4136,7 @@ export default function App() {
             {current === "grants"         && <GrantsView narrow={narrow} />}
             {current === "contributions"  && <ContributionsView narrow={narrow} />}
             {current === "grantees"       && <GranteesDirectory goGrantee={goGrantee} narrow={narrow} />}
-            {current === "grantee-detail" && <GranteeDetail org={selectedOrg} setView={nav} goGrantee={goGrantee} narrow={narrow} />}
+            {current === "grantee-detail" && <GranteeDetail org={detailOrg} setView={nav} goGrantee={goGrantee} narrow={narrow} />}
             {current === "request-grant"  && <RequestGrantForm narrow={narrow} setView={nav} />}
             {current === "contribute"     && <ContributionForm narrow={narrow} setView={nav} />}
             {current === "queue"          && <ProcessingQueue narrow={narrow} setView={nav} onChange={refreshPending} />}
