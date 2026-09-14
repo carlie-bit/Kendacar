@@ -12,8 +12,8 @@ import {
 //  no git push. Nothing is bundled: data loads only for signed-in family and advisors.
 // =============================================================================
 
-const SUPABASE_URL = "https://kdmtjvbgeqcjipdnfwty.supabase.co";
-const SUPABASE_KEY = "sb_publishable_tWKd0z8dbr2cAfExI11pPw_7ACCfjqa";
+const SUPABASE_URL = "https://kzbghmzxujnslzskiqir.supabase.co";
+const SUPABASE_KEY = "sb_publishable_fZ6jZCjd_URdPqT9dS-VIQ_FrAh4PDL";
 const REST = SUPABASE_URL + "/rest/v1/";
 const AUTH = SUPABASE_URL + "/auth/v1/";
 const FUNCTIONS = SUPABASE_URL + "/functions/v1/";
@@ -45,41 +45,66 @@ function sessionFromHash() {
     access_token, refresh_token,
     expires_at: Date.now() + (Number(p.get("expires_in") || 3600) * 1000),
     email: emailFromToken(access_token),
+    type: p.get("type") || "",
   };
 }
 
-// Send a one-time sign-in link to an email. GoTrue reads the return URL from
-// the `redirect_to` query parameter, so it must go on the URL (not the body).
-async function requestSignInCode(email) {
-  const redirect = window.location.origin + window.location.pathname;
-  const res = await fetch(AUTH + "otp?redirect_to=" + encodeURIComponent(redirect), {
-    method: "POST",
-    headers: { apikey: SUPABASE_KEY, "Content-Type": "application/json" },
-    body: JSON.stringify({ email, create_user: true }),
+const toSession = j => ({
+  access_token: j.access_token, refresh_token: j.refresh_token,
+  expires_at: Date.now() + (Number(j.expires_in || 3600) * 1000), email: emailFromToken(j.access_token),
+});
+const authHeaders = { apikey: SUPABASE_KEY, "Content-Type": "application/json" };
+const returnHere = () => encodeURIComponent(window.location.origin + window.location.pathname);
+
+async function signInWithPassword(email, password) {
+  const res = await fetch(AUTH + "token?grant_type=password", {
+    method: "POST", headers: authHeaders, body: JSON.stringify({ email, password }),
   });
-  if (res.ok) return true;
   const j = await res.json().catch(() => ({}));
-  const text = String(j.msg || j.message || j.error_description || "");
-  // New accounts are refused by a database rule unless the email is on the family/advisor list.
-  if (/database error|not_on_allowlist/i.test(text)) throw new Error("That email isn't on the Kendacar list. Check the spelling, or contact the foundation.");
+  if (res.ok) return toSession(j);
+  const text = String(j.error_description || j.msg || j.message || "");
+  if (/not confirmed/i.test(text)) throw new Error("Please confirm your email first, using the link we sent when you created your password.");
   if (res.status === 429) throw new Error("Too many attempts. Wait a minute, then try again.");
-  throw new Error(text || "Couldn't send a code (" + res.status + ").");
+  throw new Error("That email and password don't match.");
 }
 
-// Exchange the 6-digit code from the sign-in email for a session. A person's very first
-// sign-in issues a signup code rather than an email code, so try both.
-async function verifySignInCode(email, token) {
-  const attempt = type => fetch(AUTH + "verify", {
-    method: "POST",
-    headers: { apikey: SUPABASE_KEY, "Content-Type": "application/json" },
-    body: JSON.stringify({ type, email, token }),
+// First time: choose a password. Supabase emails a one-time confirmation link so nobody can
+// claim a family member's address before they do; after that it's just email and password.
+async function createPasswordFor(email, password) {
+  const res = await fetch(AUTH + "signup?redirect_to=" + returnHere(), {
+    method: "POST", headers: authHeaders, body: JSON.stringify({ email, password }),
   });
-  let res = await attempt("email");
-  if (!res.ok) res = await attempt("signup");
-  if (!res.ok) throw new Error("That code didn't work. Check it, or send yourself a new one.");
-  const j = await res.json();
-  return { access_token: j.access_token, refresh_token: j.refresh_token,
-    expires_at: Date.now() + (Number(j.expires_in || 3600) * 1000), email: emailFromToken(j.access_token) };
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const text = String(j.msg || j.message || j.error_description || "");
+    // New accounts are refused by a database rule unless the email is on the Kendacar list.
+    if (/database error|not_on_allowlist/i.test(text)) throw new Error("That email isn't on the Kendacar list. Check the spelling, or contact the foundation.");
+    if (/already registered|already exists/i.test(text)) throw new Error("That email already has a password. Sign in, or use Forgot password.");
+    if (res.status === 429) throw new Error("Too many attempts. Wait a minute, then try again.");
+    throw new Error(text || "Couldn't create your password (" + res.status + ").");
+  }
+  // While email confirmation is on, no session comes back until the link is clicked.
+  return j.access_token ? toSession(j) : null;
+}
+
+// Supabase answers the same way whether or not the address has an account, so this form
+// can't be used to find out who is on the list.
+async function sendPasswordReset(email) {
+  const res = await fetch(AUTH + "recover?redirect_to=" + returnHere(), {
+    method: "POST", headers: authHeaders, body: JSON.stringify({ email }),
+  });
+  if (res.status === 429) throw new Error("Too many attempts. Wait a minute, then try again.");
+  return true;
+}
+
+async function updatePassword(session, password) {
+  const res = await fetch(AUTH + "user", {
+    method: "PUT", headers: { ...authHeaders, Authorization: "Bearer " + session.access_token },
+    body: JSON.stringify({ password }),
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(String(j.msg || j.message || "Couldn't save the password (" + res.status + ")."));
+  return true;
 }
 
 // Exchange a refresh token for a fresh access token.
@@ -227,15 +252,16 @@ const useAuth = () => useContext(AuthContext);
 
 // Pull every display table in parallel and shape it like the fallback data.
 async function fetchLiveData(get) {
-  const [grants, donations, assets, settings, notes, updates, programs, gifts] = await Promise.all([
+  const [grants, donations, assets, settings, notes, updates, programs, gifts, gdocs] = await Promise.all([
     get("grants?select=id,year,org,amount,category,check_number,check_date&order=year.desc,amount.desc"),
     get("donations?select=id,year,donor,amount&order=year.desc"),
     get("investment_assets?select=id,name,value,sort_order&order=sort_order"),
     get("settings?select=key,value"),
-    get("grantee_notes?select=org,display_name,contact,contact_role,contact_email,website,description,community,note,core_outcomes,mailing_address,phone,ein"),
+    get("grantee_notes?select=org,display_name,contact,contact_role,contact_email,website,description,community,note,core_outcomes,mailing_address,phone,ein,legal_name,org_type,irs_status,verified_on,verified_by,verification_source,public_purpose,drive_folder_url"),
     get("grantee_updates?select=id,org,title,body,author,photos,created_at&order=created_at.desc"),
     get("grantee_programs?select=id,org,name,purpose,metrics,sort_order,status&order=sort_order"),
     get("contribution_gifts?select=id,gift_date,donor,donor_formal,donor_greeting,donor_address,amount,gift_type,securities,note,receipt_date&order=gift_date.desc"),
+    get("grantee_documents?select=id,org,kind,storage_path,filename,uploaded_at&order=uploaded_at.desc"),
   ]);
   const setMap = Object.fromEntries(settings.map(s => [s.key, s.value]));
   const noteMap = {};
@@ -243,6 +269,8 @@ async function fetchLiveData(get) {
     displayName: n.display_name, contact: n.contact, contactRole: n.contact_role,
     contactEmail: n.contact_email, website: n.website, description: n.description,
     community: n.community, note: n.note, mailingAddress: n.mailing_address, phone: n.phone, ein: n.ein,
+    legalName: n.legal_name, orgType: n.org_type || "charity", irsStatus: n.irs_status,
+    verifiedOn: n.verified_on, verifiedBy: n.verified_by, verificationSource: n.verification_source, publicPurpose: n.public_purpose, driveFolderUrl: n.drive_folder_url,
     coreOutcomes: n.core_outcomes || null,
   }; });
   const updateMap = {};
@@ -259,6 +287,8 @@ async function fetchLiveData(get) {
       metrics: Array.isArray(p.metrics) ? p.metrics : [],
     });
   });
+  const docMap = {};
+  (gdocs || []).forEach(d => { (docMap[d.org] = docMap[d.org] || []).push(d); });
   return {
     grants: grants.map(g => ({
       id: g.id, year: Number(g.year), org: g.org, amount: Number(g.amount),
@@ -283,6 +313,7 @@ async function fetchLiveData(get) {
     granteeNotes: noteMap,
     granteeUpdates: updateMap,
     granteePrograms: programMap,
+    granteeDocs: docMap,
   };
 }
 
@@ -299,6 +330,7 @@ const EMPTY_DATA = {
   granteeNotes: {},
   granteeUpdates: {},
   granteePrograms: {},
+  granteeDocs: {},
 };
 
 const DataContext = createContext(EMPTY_DATA);
@@ -494,8 +526,8 @@ const inputStyle = {
   fontFamily: "'Nunito Sans', sans-serif", color: "#1F3A38", background: "#fff", width: "100%",
 };
 
-function EdInput({ value, onChange, type = "text", placeholder }) {
-  return <input type={type} value={value} placeholder={placeholder}
+function EdInput({ value, onChange, type = "text", placeholder, list }) {
+  return <input type={type} value={value} placeholder={placeholder} list={list}
     onChange={e => onChange(e.target.value)} style={inputStyle} />;
 }
 function EdSelect({ value, onChange, options }) {
@@ -525,7 +557,9 @@ function MiniButton({ onClick, children, kind, disabled, title }) {
 // Inline editor for a single grant row (id null => adding a new grant).
 function GrantEditRow({ row, onDone, narrow }) {
   const { session, setSession } = useAuth();
-  const { refresh } = useData();
+  const { refresh, grants: allGrants, granteeNotes: allNotes } = useData();
+  const orgListId = "kc-orgs-" + (row?.id ?? "new");
+  const orgNames = useMemo(() => [...new Set([...Object.keys(allNotes || {}), ...(allGrants || []).map(g => g.org)])].sort(), [allGrants, allNotes]);
   const [year, setYear] = useState(row?.year ?? new Date().getFullYear());
   const [org, setOrg] = useState(row?.org ?? "");
   const [amount, setAmount] = useState(row?.amount ?? "");
@@ -557,7 +591,8 @@ function GrantEditRow({ row, onDone, narrow }) {
   return (
     <tr style={{ background: "#F0FAFA", borderBottom: "1px solid #EFE7DD" }}>
       <td style={{ padding: "8px 12px" }}><EdInput type="number" value={year} onChange={setYear} /></td>
-      <td style={{ padding: "8px 12px" }}><EdInput value={org} onChange={setOrg} placeholder="Organization" /></td>
+      <td style={{ padding: "8px 12px" }}><EdInput value={org} onChange={setOrg} placeholder="Organization" list={orgListId} />
+        <datalist id={orgListId}>{orgNames.map(n => <option key={n} value={n} />)}</datalist></td>
       <td style={{ padding: "8px 12px" }}><EdSelect value={category} onChange={setCategory} options={CATEGORY_LIST} /></td>
       <td style={{ padding: "8px 12px" }}><EdInput type="number" value={amount} onChange={setAmount} placeholder="Amount" /></td>
       <td style={{ padding: "8px 12px" }}><EdInput type="date" value={checkDate} onChange={setCheckDate} /></td>
@@ -622,66 +657,136 @@ function DonationEditRow({ row, onDone }) {
 }
 
 // Footer sign-in / sign-out control.
-// Two-step sign-in: email, then the 6-digit code from that email (or its link). The code path
-// matters for work inboxes, whose security scanners can open a link before its owner does.
+const PASSWORD_MIN = 8;
+
+// Sign in with email and password. First-timers create a password (one confirmation email);
+// anyone who forgets gets a reset link.
 function SignInPanel() {
-  const { startSignIn, verifyCode } = useAuth();
-  const [step, setStep] = useState("email"); // email | code
+  const { signIn, createPassword, sendPasswordReset } = useAuth();
+  const [mode, setMode] = useState("signin"); // signin | create | forgot | confirm-sent | reset-sent
   const [addr, setAddr] = useState("");
-  const [code, setCode] = useState("");
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  const email = () => addr.trim().toLowerCase();
+  const go = next => { setMode(next); setMsg(""); setPw(""); setPw2(""); };
 
-  async function send(e) {
-    if (e) e.preventDefault();
-    if (!addr.trim()) { setMsg("Enter your email address."); return; }
+  async function run(e, fn) {
+    e.preventDefault();
+    if (!email()) { setMsg("Enter your email address."); return; }
     setBusy(true); setMsg("");
-    try { await startSignIn(addr.trim().toLowerCase()); setStep("code"); }
-    catch (err) { setMsg(err.message); }
-    finally { setBusy(false); }
+    try { await fn(); } catch (err) { setMsg(err.message); } finally { setBusy(false); }
   }
-  async function verify(e) {
-    if (e) e.preventDefault();
-    const digits = code.replace(/\D/g, "");
-    if (digits.length < 6) { setMsg("Enter the 6-digit code from the email."); return; }
-    setBusy(true); setMsg("");
-    try { await verifyCode(addr.trim().toLowerCase(), digits); }
-    catch (err) { setMsg(err.message); setBusy(false); }
-  }
+  const doSignIn = e => run(e, async () => {
+    if (!pw) throw new Error("Enter your password.");
+    await signIn(email(), pw);
+  });
+  const doCreate = e => run(e, async () => {
+    if (pw.length < PASSWORD_MIN) throw new Error("Use at least " + PASSWORD_MIN + " characters.");
+    if (pw !== pw2) throw new Error("The two passwords don't match.");
+    const session = await createPassword(email(), pw);
+    if (!session) go("confirm-sent");
+  });
+  const doForgot = e => run(e, async () => { await sendPasswordReset(email()); go("reset-sent"); });
 
   const field = { ...formInput, fontSize: 15 };
   const primary = { width: "100%", background: TEAL, color: "#fff", border: "none", borderRadius: 12, padding: "13px 22px",
     fontSize: 15, fontWeight: 700, fontFamily: FONT_BODY, cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 };
   const quiet = { background: "none", border: "none", padding: 0, color: TEAL, cursor: "pointer", fontWeight: 700, fontSize: 12.5, fontFamily: FONT_BODY };
+  const note = { fontSize: 14, color: "#5E6E6C", fontFamily: FONT_BODY, lineHeight: 1.6 };
+  const error = msg && <div style={{ color: "#B5451B", fontSize: 13, marginBottom: 12, fontFamily: FONT_BODY }}>{msg}</div>;
+  const emailField = (
+    <FormField label="Email">
+      <input type="email" autoComplete="email" value={addr} onChange={e => setAddr(e.target.value)} placeholder="you@example.com" style={field} />
+    </FormField>
+  );
 
-  if (step === "email") {
+  if (mode === "confirm-sent" || mode === "reset-sent") {
     return (
-      <form onSubmit={send}>
-        <FormField label="Email">
-          <input type="email" autoComplete="email" value={addr} onChange={e => setAddr(e.target.value)} placeholder="you@example.com" style={field} />
+      <div>
+        <p style={note}>
+          {mode === "confirm-sent"
+            ? <>Almost done. We sent a confirmation link to <strong style={{ color: INK }}>{email()}</strong>. Click it once and you're in; after that, just sign in with your password.</>
+            : <>If <strong style={{ color: INK }}>{email()}</strong> has a Kendacar password, a link to reset it is on its way.</>}
+        </p>
+        <button type="button" style={{ ...quiet, marginTop: 14 }} onClick={() => go("signin")}>Back to sign in</button>
+      </div>
+    );
+  }
+  if (mode === "create") {
+    return (
+      <form onSubmit={doCreate}>
+        <p style={{ ...note, marginBottom: 14 }}>Choose a password for your Kendacar sign-in. We'll email you once to confirm it's you.</p>
+        {emailField}
+        <FormField label="Password" hint={"At least " + PASSWORD_MIN + " characters"}>
+          <input type="password" autoComplete="new-password" value={pw} onChange={e => setPw(e.target.value)} style={field} />
         </FormField>
-        {msg && <div style={{ color: "#B5451B", fontSize: 13, marginBottom: 12, fontFamily: FONT_BODY }}>{msg}</div>}
-        <button type="submit" disabled={busy} style={primary}>{busy ? "Sending\u2026" : "Email me a sign-in code"}</button>
+        <FormField label="Password again">
+          <input type="password" autoComplete="new-password" value={pw2} onChange={e => setPw2(e.target.value)} style={field} />
+        </FormField>
+        {error}
+        <button type="submit" disabled={busy} style={primary}>{busy ? "Saving\u2026" : "Create my password"}</button>
+        <button type="button" style={{ ...quiet, marginTop: 14 }} onClick={() => go("signin")}>I already have a password</button>
+      </form>
+    );
+  }
+  if (mode === "forgot") {
+    return (
+      <form onSubmit={doForgot}>
+        <p style={{ ...note, marginBottom: 14 }}>Enter your email and we'll send a link to choose a new password.</p>
+        {emailField}
+        {error}
+        <button type="submit" disabled={busy} style={primary}>{busy ? "Sending\u2026" : "Email me a reset link"}</button>
+        <button type="button" style={{ ...quiet, marginTop: 14 }} onClick={() => go("signin")}>Back to sign in</button>
       </form>
     );
   }
   return (
-    <form onSubmit={verify}>
-      <p style={{ fontSize: 14, color: "#5E6E6C", fontFamily: FONT_BODY, lineHeight: 1.55, marginBottom: 14 }}>
-        We sent a code to <strong style={{ color: INK }}>{addr}</strong>. Type it below, or click the link in that email.
-      </p>
-      <FormField label="6-digit code">
-        <input autoFocus inputMode="numeric" autoComplete="one-time-code" maxLength={10} value={code}
-          onChange={e => setCode(e.target.value)} placeholder="123456"
-          style={{ ...field, fontSize: 22, letterSpacing: "0.3em", textAlign: "center" }} />
+    <form onSubmit={doSignIn}>
+      {emailField}
+      <FormField label="Password">
+        <input type="password" autoComplete="current-password" value={pw} onChange={e => setPw(e.target.value)} style={field} />
       </FormField>
-      {msg && <div style={{ color: "#B5451B", fontSize: 13, marginBottom: 12, fontFamily: FONT_BODY }}>{msg}</div>}
-      <button type="submit" disabled={busy} style={primary}>{busy ? "Checking\u2026" : "Sign in"}</button>
-      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 14 }}>
-        <button type="button" style={quiet} onClick={() => { setStep("email"); setCode(""); setMsg(""); }}>Use a different email</button>
-        <button type="button" style={quiet} onClick={send} disabled={busy}>Send a new code</button>
+      {error}
+      <button type="submit" disabled={busy} style={primary}>{busy ? "Signing in\u2026" : "Sign in"}</button>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginTop: 14, flexWrap: "wrap" }}>
+        <button type="button" style={quiet} onClick={() => go("create")}>First time? Create your password</button>
+        <button type="button" style={quiet} onClick={() => go("forgot")}>Forgot password?</button>
       </div>
     </form>
+  );
+}
+
+// Shown after following a reset link: choose the new password, then carry on into the site.
+function SetPasswordScreen() {
+  const { savePassword, email } = useAuth();
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  async function submit(e) {
+    e.preventDefault();
+    if (pw.length < PASSWORD_MIN) { setMsg("Use at least " + PASSWORD_MIN + " characters."); return; }
+    if (pw !== pw2) { setMsg("The two passwords don't match."); return; }
+    setBusy(true); setMsg("");
+    try { await savePassword(pw); } catch (err) { setMsg(err.message); setBusy(false); }
+  }
+  return (
+    <NoticeScreen title="Choose a new password" body={"For " + email}>
+      <form onSubmit={submit} style={{ width: "100%", textAlign: "left" }}>
+        <FormField label="New password" hint={"At least " + PASSWORD_MIN + " characters"}>
+          <input type="password" autoComplete="new-password" value={pw} onChange={e => setPw(e.target.value)} style={formInput} />
+        </FormField>
+        <FormField label="New password again">
+          <input type="password" autoComplete="new-password" value={pw2} onChange={e => setPw2(e.target.value)} style={formInput} />
+        </FormField>
+        {msg && <div style={{ color: "#B5451B", fontSize: 13, marginBottom: 12 }}>{msg}</div>}
+        <button type="submit" disabled={busy} style={{ width: "100%", background: TEAL, color: "#fff", border: "none", borderRadius: 12, padding: "12px 22px", fontSize: 15, fontWeight: 700, fontFamily: FONT_BODY, cursor: "pointer", opacity: busy ? 0.6 : 1 }}>
+          {busy ? "Saving\u2026" : "Save and continue"}
+        </button>
+      </form>
+    </NoticeScreen>
   );
 }
 
@@ -755,7 +860,7 @@ function WelcomePage({ narrow }) {
         <div style={card}>
           <div style={eyebrow}>Family &amp; advisors</div>
           <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 22, marginBottom: 6 }}>Sign in</div>
-          <p style={{ fontSize: 14, color: "#6F7E7C", lineHeight: 1.55, marginBottom: 18 }}>Enter your email and we'll send a sign-in code.</p>
+          <p style={{ fontSize: 14, color: "#6F7E7C", lineHeight: 1.55, marginBottom: 18 }}>Sign in with your email and Kendacar password.</p>
           <SignInPanel />
         </div>
       </div>
@@ -1899,8 +2004,9 @@ function buildGranteeIndex(grants, notes) {
 }
 
 function GranteesDirectory({ goGrantee, narrow }) {
-  const { grants, granteeNotes } = useData();
+  const { grants, granteeNotes, granteeDocs } = useData();
   const index = useMemo(() => buildGranteeIndex(grants, granteeNotes), [grants, granteeNotes]);
+  const recentYear = new Date().getFullYear() - 1;
   const nameOf = o => (granteeNotes[o.org] && granteeNotes[o.org].displayName) || o.org;
   const [q, setQ] = useState("");
   const list = index.filter(o => nameOf(o).toLowerCase().includes(q.toLowerCase()) || o.org.toLowerCase().includes(q.toLowerCase()));
@@ -2026,6 +2132,12 @@ function GranteesDirectory({ goGrantee, narrow }) {
                 <div style={{ fontSize: 11, color: "#A8B8B8", fontWeight: 600 }}>#{i + 1}</div>
                 <div style={{ fontSize: 14, fontWeight: 600, color: "#1F3A38", lineHeight: 1.25 }}>{nameOf(o)}</div>
                 <div style={{ fontSize: 12, color: "#7C8C8A", marginTop: 4 }}>{o.count} grant{o.count > 1 ? "s" : ""} &middot; {o.firstYear}&ndash;{o.lastYear}</div>
+                {(() => {
+                  const dd = diligenceFor(granteeNotes[o.org], (granteeDocs || {})[o.org]);
+                  if (dd.done === dd.total) return <div style={{ display: "inline-block", marginTop: 6, fontSize: 10.5, fontWeight: 800, color: "#0E7A5F", background: "#EAF7F2", borderRadius: 20, padding: "1px 8px" }}>✓ Verified file</div>;
+                  if (!(o.lastYear >= recentYear)) return null;
+                  return <div style={{ display: "inline-block", marginTop: 6, fontSize: 10.5, fontWeight: 800, color: "#9A7B1E", background: "#FFF6E5", borderRadius: 20, padding: "1px 8px" }}>Needs file · {dd.done} of {dd.total}</div>;
+                })()}
               </div>
               <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                 <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 700, fontSize: 20, color: TEAL }}>{fmtK(o.total)}</div>
@@ -2806,6 +2918,267 @@ function GrantHistoryRow({ g, i, signedIn }) {
   );
 }
 
+// =============================================================================
+//  GRANTEE DUE DILIGENCE
+//  Nothing here is required. It shows what's on file for each grantee and what's
+//  still worth getting, and the processing queue warns (but doesn't block) on gaps.
+// =============================================================================
+
+const DOC_KINDS = {
+  determination_letter: "IRS determination letter",
+  w9: "W-9",
+  irs_status_check: "IRS status check printout",
+  government_letter: "Letter on government letterhead",
+  other: "Other document",
+};
+const DOC_SLOTS = {
+  charity: ["determination_letter", "w9", "irs_status_check", "other"],
+  government: ["w9", "government_letter", "other"],
+  other: ["w9", "other"],
+};
+const ORG_TYPE_LABEL = { charity: "Charity · 501(c)(3)", government: "Government unit", other: "Other organization" };
+const IRS_SEARCH_URL = "https://apps.irs.gov/app/eos/";
+
+function diligenceFor(note, docs) {
+  const type = (note && note.orgType) || "charity";
+  const has = kind => (docs || []).some(d => d.kind === kind);
+  const items = type === "government"
+    ? [
+        { label: "Legal name", done: !!(note && note.legalName) },
+        { label: "W-9 or government letter", done: has("w9") || has("government_letter") },
+        { label: "Public purpose noted", done: !!(note && note.publicPurpose) },
+      ]
+    : type === "charity"
+    ? [
+        { label: "Legal name", done: !!(note && note.legalName) },
+        { label: "EIN", done: !!(note && note.ein) },
+        { label: "IRS status confirmed", done: !!(note && note.verifiedOn) },
+        { label: "IRS determination letter", done: has("determination_letter"), ideal: true },
+      ]
+    : [
+        { label: "Legal name", done: !!(note && note.legalName) },
+        { label: "W-9", done: has("w9") },
+      ];
+  const done = items.filter(i => i.done).length;
+  return { type, items, done, total: items.length, missing: items.filter(i => !i.done) };
+}
+
+// One document slot in a grantee's file: attach, open, replace, remove (family); open only (advisors).
+function GranteeDocSlot({ org, kind, doc, readOnly, onChange }) {
+  const { session, setSession } = useAuth();
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef(null);
+
+  async function pick(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setBusy(true);
+    try {
+      const slug = org.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40);
+      const path = "grantees/" + slug + "/" + Date.now() + "_" + file.name.replace(/[^A-Za-z0-9._-]+/g, "_");
+      await uploadPrivateDoc(session, setSession, path, file);
+      await authedWrite(session, setSession, "POST", "grantee_documents", {
+        org, kind, storage_path: path, filename: file.name, content_type: file.type || null,
+      });
+      if (doc) {
+        try { await deletePrivateDoc(session, setSession, doc.storage_path); } catch { /* row still goes */ }
+        await authedWrite(session, setSession, "DELETE", "grantee_documents?id=eq." + doc.id);
+      }
+      if (onChange) await onChange();
+    } catch (err) { alert("Upload failed: " + err.message); }
+    finally { setBusy(false); }
+  }
+  async function open() {
+    setBusy(true);
+    try { window.open(await signedDocUrl(session, setSession, doc.storage_path), "_blank", "noopener"); }
+    catch (err) { alert(err.message); }
+    finally { setBusy(false); }
+  }
+  async function remove() {
+    if (!window.confirm("Remove \"" + (doc.filename || DOC_KINDS[kind]) + "\" from " + org + "'s file?")) return;
+    setBusy(true);
+    try {
+      await deletePrivateDoc(session, setSession, doc.storage_path);
+      await authedWrite(session, setSession, "DELETE", "grantee_documents?id=eq." + doc.id);
+      if (onChange) await onChange();
+    } catch (err) { alert(err.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "9px 0", borderTop: "1px solid #F3ECE3", flexWrap: "wrap" }}>
+      <div style={{ fontSize: 13.5, fontFamily: FONT_BODY, color: INK, minWidth: 0 }}>
+        <span style={{ color: doc ? "#1F9E6E" : "#C8BBA8", fontWeight: 800, marginRight: 8 }}>{doc ? "✓" : "–"}</span>
+        {DOC_KINDS[kind]}
+        {doc && <span style={{ color: "#9B8E80", fontSize: 12 }}> · {doc.filename}</span>}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <input ref={fileRef} type="file" onChange={pick} style={{ display: "none" }} accept=".pdf,.png,.jpg,.jpeg,.heic,.doc,.docx" />
+        {doc && <MiniButton kind="save" onClick={open} disabled={busy}>{busy ? "…" : "Open"}</MiniButton>}
+        {!readOnly && (doc
+          ? <>
+              <button onClick={() => fileRef.current && fileRef.current.click()} disabled={busy} style={subAction(false)} title="Upload a different file in its place">Replace</button>
+              <button onClick={remove} disabled={busy} style={subAction(true)} title="Delete this document">Remove</button>
+            </>
+          : <MiniButton kind="cancel" onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}>{busy ? "Uploading…" : "Attach"}</MiniButton>)}
+        {readOnly && !doc && <span style={{ fontSize: 11.5, color: "#C8BBA8" }}>not on file</span>}
+      </div>
+    </div>
+  );
+}
+
+function DueDiligenceEditor({ org, note, onDone }) {
+  const { session, setSession, email } = useAuth();
+  const { refresh } = useData();
+  const [f, setF] = useState({
+    org_type: (note && note.orgType) || "charity",
+    legal_name: (note && note.legalName) || "",
+    ein: (note && note.ein) || "",
+    irs_status: (note && note.irsStatus) || "",
+    verified_on: (note && note.verifiedOn) || "",
+    verified_by: (note && note.verifiedBy) || "",
+    verification_source: (note && note.verificationSource) || "",
+    public_purpose: (note && note.publicPurpose) || "",
+    drive_folder_url: (note && note.driveFolderUrl) || "",
+  });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const set = (k, v) => setF({ ...f, [k]: v });
+  const today = new Date().toISOString().slice(0, 10);
+
+  async function save() {
+    setBusy(true); setErr("");
+    const payload = {};
+    Object.keys(f).forEach(k => { payload[k] = String(f[k]).trim() === "" ? null : String(f[k]).trim(); });
+    payload.org_type = f.org_type;
+    try {
+      if (note) await authedWrite(session, setSession, "PATCH", "grantee_notes?org=eq." + encodeURIComponent(org), payload);
+      else await authedWrite(session, setSession, "POST", "grantee_notes", { org, ...payload });
+      await refresh(); onDone();
+    } catch (e) { setErr(e.message); setBusy(false); }
+  }
+
+  const label = t => <div style={{ fontFamily: FONT_BODY, fontWeight: 700, fontSize: 12, color: INK, marginBottom: 4 }}>{t}</div>;
+  const field = (t, k, ph, type) => (
+    <div style={{ marginBottom: 12 }}>
+      {label(t)}
+      <input type={type || "text"} value={f[k]} onChange={e => set(k, e.target.value)} placeholder={ph} style={{ ...formInput, fontSize: 14, padding: "9px 12px" }} />
+    </div>
+  );
+  const isGov = f.org_type === "government", isCharity = f.org_type === "charity";
+
+  return (
+    <div style={{ background: "#FBF4EC", borderRadius: 14, padding: 18, marginTop: 12 }}>
+      {label("Type of organization")}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        {Object.keys(ORG_TYPE_LABEL).map(t => (
+          <button key={t} type="button" onClick={() => set("org_type", t)} style={{
+            background: f.org_type === t ? TEAL : "#fff", color: f.org_type === t ? "#fff" : "#7C8C8A",
+            border: "1px solid " + (f.org_type === t ? TEAL : "#E2D7C9"), borderRadius: 10, padding: "8px 14px",
+            fontSize: 13, fontWeight: 700, fontFamily: FONT_BODY, cursor: "pointer",
+          }}>{ORG_TYPE_LABEL[t]}</button>
+        ))}
+      </div>
+      {field("Google Drive folder", "drive_folder_url", "Paste the link to this grantee's folder")}
+      {field("Legal name", "legal_name", (note && note.displayName) || "Exactly as on the IRS letter or W-9")}
+      {!isGov && field("EIN", "ein", "65-0017325")}
+      {isCharity && field("IRS status", "irs_status", "e.g. 501(c)(3) public charity (files Form 990)")}
+      {isCharity && (
+        <div style={{ marginBottom: 12 }}>
+          {label("Confirmed in the IRS Tax Exempt Organization Search")}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 8, alignItems: "center" }}>
+            <input type="date" value={f.verified_on} onChange={e => set("verified_on", e.target.value)} style={{ ...formInput, fontSize: 14, padding: "9px 12px" }} />
+            <input value={f.verified_by} onChange={e => set("verified_by", e.target.value)} placeholder="Confirmed by" style={{ ...formInput, fontSize: 14, padding: "9px 12px" }} />
+            <MiniButton kind="edit" onClick={() => setF({ ...f, verified_on: today, verified_by: email })}>Mark confirmed today</MiniButton>
+          </div>
+          <a href={IRS_SEARCH_URL} target="_blank" rel="noopener noreferrer" style={{ display: "inline-block", marginTop: 6, color: TEAL, fontSize: 12.5, fontWeight: 700, textDecoration: "none", fontFamily: FONT_BODY }}>Open the IRS search →</a>
+        </div>
+      )}
+      {isGov && (
+        <div style={{ marginBottom: 12 }}>
+          {label("Public purpose of the grant")}
+          <textarea rows={2} value={f.public_purpose} onChange={e => set("public_purpose", e.target.value)} placeholder="e.g. Construction of the public pavilion for community use" style={{ ...formInput, fontSize: 14, padding: "9px 12px", resize: "vertical" }} />
+        </div>
+      )}
+      <div style={{ marginBottom: 12 }}>
+        {label("Source / notes")}
+        <textarea rows={2} value={f.verification_source} onChange={e => set("verification_source", e.target.value)} placeholder="Where the status came from — a link or a note" style={{ ...formInput, fontSize: 14, padding: "9px 12px", resize: "vertical" }} />
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <MiniButton kind="save" onClick={save} disabled={busy}>{busy ? "Saving…" : "Save"}</MiniButton>
+        <MiniButton kind="cancel" onClick={onDone} disabled={busy}>Cancel</MiniButton>
+      </div>
+      {err && <div style={{ color: "#B5451B", fontSize: 12, marginTop: 8 }}>{err}</div>}
+    </div>
+  );
+}
+
+function DueDiligenceCard({ org, note, narrow }) {
+  const { signedIn } = useAuth();
+  const { granteeDocs, refresh } = useData();
+  const docs = (granteeDocs || {})[org] || [];
+  const [editing, setEditing] = useState(false);
+  const dd = diligenceFor(note, docs);
+  const complete = dd.done === dd.total;
+  const detail = (k, v) => v ? (
+    <div style={{ display: "grid", gridTemplateColumns: "150px minmax(0,1fr)", gap: 10, padding: "5px 0", fontSize: 13.5, fontFamily: FONT_BODY }}>
+      <div style={{ color: "#7C8C8A" }}>{k}</div><div style={{ color: INK, overflowWrap: "anywhere" }}>{v}</div>
+    </div>
+  ) : null;
+
+  return (
+    <Card style={{ padding: narrow ? 20 : 24, marginBottom: 24 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18 }}>Due diligence</div>
+          <span style={{ background: complete ? "#EAF7F2" : "#FFF6E5", color: complete ? "#0E7A5F" : "#9A7B1E", border: "1px solid " + (complete ? "#BFE0DE" : "#F4C95D"), borderRadius: 20, padding: "2px 10px", fontSize: 11.5, fontWeight: 800 }}>
+            {dd.done} of {dd.total} on file
+          </span>
+          <span style={{ fontSize: 12, color: "#7C8C8A" }}>{ORG_TYPE_LABEL[dd.type]}</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {note && /^https:\/\//.test(note.driveFolderUrl || "") && (
+            <a href={note.driveFolderUrl} target="_blank" rel="noopener noreferrer" style={{ color: TEAL, fontSize: 13, fontWeight: 700, textDecoration: "none", fontFamily: FONT_BODY }}>Drive folder ↗</a>
+          )}
+          {signedIn && !editing && <MiniButton kind="edit" onClick={() => setEditing(true)}>{note ? "Edit" : "Start file"}</MiniButton>}
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 10 }}>
+        {dd.items.map(i => (
+          <span key={i.label} style={{ fontSize: 12.5, fontFamily: FONT_BODY, color: i.done ? "#0E7A5F" : "#9B8E80" }}>
+            {i.done ? "✓" : "–"} {i.label}{!i.done && i.ideal ? " (ideal)" : ""}
+          </span>
+        ))}
+      </div>
+
+      {editing
+        ? <DueDiligenceEditor org={org} note={note} onDone={() => setEditing(false)} />
+        : (note && (note.legalName || note.ein || note.irsStatus || note.verifiedOn || note.verificationSource || note.publicPurpose)) && (
+          <div style={{ marginTop: 12 }}>
+            {detail("Legal name", note.legalName)}
+            {detail("EIN", note.ein)}
+            {detail("IRS status", note.irsStatus)}
+            {detail("Confirmed", note.verifiedOn ? fmtCheckDate(note.verifiedOn) + (note.verifiedBy ? " by " + note.verifiedBy : "") : null)}
+            {detail("Public purpose", note.publicPurpose)}
+            {detail("Source / notes", note.verificationSource)}
+          </div>
+        )}
+
+      {note
+        ? <div style={{ marginTop: 12 }}>
+            {DOC_SLOTS[dd.type].map(kind => (
+              <GranteeDocSlot key={kind} org={org} kind={kind} doc={docs.find(d => d.kind === kind)} readOnly={!signedIn} onChange={refresh} />
+            ))}
+          </div>
+        : <div style={{ marginTop: 12, fontSize: 13, color: "#9B8E80", fontFamily: FONT_BODY }}>
+            No file yet.{signedIn ? " Start one to record the legal name, status and documents." : ""}
+          </div>}
+    </Card>
+  );
+}
+
 function GranteeDetail({ org, setView, goGrantee, narrow }) {
   const { grants, granteeNotes, granteeUpdates, granteePrograms } = useData();
   const { signedIn, session, setSession } = useAuth();
@@ -2882,6 +3255,8 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
           </div>
         )}
       </div>
+
+      <DueDiligenceCard org={org} note={note} narrow={narrow} />
 
       {/* Shared Kendacar core outcomes — youth grantees */}
       {(YOUTH_CATEGORIES.includes(rec.category) || (note && note.coreOutcomes)) && (
@@ -3249,7 +3624,13 @@ function ContributionForm({ narrow, setView }) {
 
 function MarkSentRow({ req, onDone }) {
   const { session, setSession } = useAuth();
-  const { refresh } = useData();
+  const { refresh, granteeNotes, granteeDocs } = useData();
+  // Nothing here blocks a check; it just says plainly what isn't on file yet.
+  const fileKey = [normalizeOrg(req.org), req.org].find(k => (granteeNotes || {})[k]);
+  const fileNote = fileKey ? granteeNotes[fileKey] : null;
+  const fileGaps = !fileNote
+    ? ["no grantee file yet (legal name, EIN and IRS status aren't recorded)"]
+    : diligenceFor(fileNote, (granteeDocs || {})[fileKey]).missing.map(i => i.label + (i.ideal ? " (ideal to have)" : ""));
   const today = new Date().toISOString().slice(0, 10);
   const [amount, setAmount] = useState(req.amount != null ? req.amount : "");
   const [date, setDate] = useState(today);
@@ -3266,9 +3647,15 @@ function MarkSentRow({ req, onDone }) {
       await authedWrite(session, setSession, "POST", "grants",
         { year: yr, org: req.org, amount: Number(amount), category: req.category || "Community & Social Services",
           check_number: checkNo.trim() || null, check_date: date || null });
-      // 2) mark the recommendation as sent
+      // 2) mark the recommendation as sent, linked to the grant just created
+      let grantId = null;
+      try {
+        const made = await authedGet(session, setSession, "grants?select=id&org=eq." + encodeURIComponent(req.org) + "&order=id.desc&limit=1");
+        grantId = made && made[0] ? made[0].id : null;
+      } catch { /* the link is a nicety; the sent status still saves */ }
       await authedWrite(session, setSession, "PATCH", "grant_requests?id=eq." + req.id,
-        { status: "sent", check_date: date || null, check_number: checkNo.trim() || null, processed_at: new Date().toISOString() });
+        { status: "sent", check_date: date || null, check_number: checkNo.trim() || null, processed_at: new Date().toISOString(),
+          ...(grantId ? { grant_id: grantId } : {}) });
       // 3) open a personal confirmation email in your mail app (if we have their address)
       if (req.requester_email) {
         const subject = "Your Kendacar grant to " + req.org + " is on its way";
@@ -3287,6 +3674,11 @@ function MarkSentRow({ req, onDone }) {
 
   return (
     <div style={{ marginTop: 12, paddingTop: 14, borderTop: "1px dashed " + LINE }}>
+      {fileGaps.length > 0 && (
+        <div style={{ background: "#FFF6E5", border: "1px solid #F4C95D", borderRadius: 10, padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#7A5B12", fontFamily: FONT_BODY, lineHeight: 1.5 }}>
+          <strong>Not on file for {req.org}:</strong> {fileGaps.join(" · ")}. You can still post the grant and add these on the grantee's page later.
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: narrow720() ? "1fr" : "1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
         <div><label style={{ fontSize: 11, color: "#7C8C8A", fontWeight: 700, display: "block", marginBottom: 3 }}>Amount sent ($)</label><EdInput type="number" value={amount} onChange={setAmount} /></div>
         <div><label style={{ fontSize: 11, color: "#7C8C8A", fontWeight: 700, display: "block", marginBottom: 3 }}>Date sent</label><EdInput type="date" value={date} onChange={setDate} /></div>
@@ -3420,6 +3812,7 @@ export default function App() {
   const [role, setRole] = useState(null);           // null = checking, "admin", "advisor", "none", "error"
   const [restoring, setRestoring] = useState(true); // true until any saved sign-in has been checked
   const [attempt, setAttempt] = useState(0);
+  const [resetting, setResetting] = useState(false); // arrived from a "reset password" email
   const [pending, setPending] = useState(0);        // count of new submissions
   const width = useWindowWidth();
   const narrow = width < 720;
@@ -3445,7 +3838,7 @@ export default function App() {
   useEffect(() => {
     const fromHash = sessionFromHash();
     const saved = fromHash || loadSession();
-    if (fromHash) saveSession(fromHash);
+    if (fromHash) { saveSession(fromHash); if (fromHash.type === "recovery") setResetting(true); }
     const h = window.location.hash.replace("#", "");
     if (h === "request-grant" || h === "contribute") setView(h);
     else if (h === "review" || h === "queue") setView("queue");
@@ -3492,8 +3885,10 @@ export default function App() {
     signedIn: role === "admin",                      // may edit: the flag every edit control checks
     advisor: role === "advisor",
     email: session?.email || "",
-    startSignIn: requestSignInCode,
-    verifyCode: async (addr, code) => { const s = await verifySignInCode(addr, code); saveSession(s); setSession(s); },
+    signIn: async (addr, pw) => { const s = await signInWithPassword(addr, pw); saveSession(s); setSession(s); },
+    createPassword: async (addr, pw) => { const s = await createPasswordFor(addr, pw); if (s) { saveSession(s); setSession(s); } return s; },
+    sendPasswordReset,
+    savePassword: async pw => { await updatePassword(sessionRef.current, pw); setResetting(false); },
     signOut,
   };
   const shell = inner => (
@@ -3506,6 +3901,7 @@ export default function App() {
 
   if (restoring || (session && role === null)) return shell(<NoticeScreen title="Signing you in\u2026" />);
   if (!session) return shell(<WelcomePage narrow={narrow} />);
+  if (resetting) return shell(<SetPasswordScreen />);
   if (role === "none") return shell(
     <NoticeScreen title="This email isn't on the Kendacar list" body={"You're signed in as " + auth.email + ", but that address hasn't been given access."}>
       <button style={pillQuiet} onClick={signOut}>Sign out</button>
