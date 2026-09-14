@@ -420,6 +420,12 @@ const fmtK = n => n >= 1000000 ? "$" + (n/1000000).toFixed(1) + "M" : n >= 1000 
 // Normalize grantee display names so the same org doesn't split into two rows
 // (casing + trailing-space variants). Huron Community vs Huron County
 // Community Foundation are intentionally left separate.
+// The name to show for a grant's organization: legal name, then display name, then the name it's filed under.
+function orgLabel(org, notes) {
+  const n = notes && (notes[org] || notes[normalizeOrg(org || "")]);
+  return (n && (n.legalName || n.displayName)) || org;
+}
+
 function normalizeOrg(org) {
   let o = org.trim().replace(/\s+/g, " ");
   if (/^casa of mchenry county$/i.test(o)) return "CASA of McHenry County";
@@ -946,7 +952,7 @@ function FlowNode({ label, value, sub, big }) {
 }
 
 function PulseLanding({ setView, goGrantee, narrow }) {
-  const { grants, donations, investments } = useData();
+  const { grants, donations, investments, granteeNotes } = useData();
   const { signedIn } = useAuth();
   const cycleYear = currentCycleYear(grants);
   const totalGranted = sumAmount(grants);
@@ -1013,7 +1019,7 @@ function PulseLanding({ setView, goGrantee, narrow }) {
                 textAlign: "left", background: "#fff", border: "1px solid #EFE7DD", borderLeft: "4px solid " + c,
                 borderRadius: 10, padding: "16px 18px", cursor: "pointer", fontFamily: "'Nunito Sans', sans-serif",
               }}>
-                <div style={{ fontSize: 14, fontWeight: 600, color: "#1F3A38", marginBottom: 8, lineHeight: 1.25 }}>{g.org}</div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#1F3A38", marginBottom: 8, lineHeight: 1.25 }}>{orgLabel(g.org, granteeNotes)}</div>
                 <div style={{ fontFamily: "'Fredoka', serif", fontWeight: 700, fontSize: 24, color: TEAL }}>{fmt(g.amount)}</div>
                 <div style={{ fontSize: 11, color: c, marginTop: 8, fontWeight: 600 }}>{g.category} &rarr;</div>
               </button>
@@ -1470,7 +1476,7 @@ function InvestmentsView({ narrow }) {
 // =============================================================================
 
 function GrantsView({ narrow }) {
-  const { grants } = useData();
+  const { grants, granteeNotes } = useData();
   const { signedIn, member, session, setSession, email } = useAuth();
   const [docs, setDocs] = useState({});   // grant_id -> uploaded documents
   const [yearFilter, setYearFilter] = useState("All Years");
@@ -1485,7 +1491,7 @@ function GrantsView({ narrow }) {
   // Undated grants sort at the end of their year so old and new stay in one sensible order.
   const sortVal = (g, key) => {
     if (key === "year")     return g.year || 0;
-    if (key === "org")      return String(g.org || "").toLowerCase();
+    if (key === "org")      return String(orgLabel(g.org, granteeNotes) || "").toLowerCase();
     if (key === "category") return String(g.category || "").toLowerCase();
     if (key === "amount")   return Number(g.amount) || 0;
     if (key === "check")    return g.checkNumber ? Number(g.checkNumber) || 0 : -1;
@@ -1666,7 +1672,7 @@ function GrantsView({ narrow }) {
                   ) : (
                   <tr key={g.id ?? g.org + g.year + i} style={{ borderBottom: "1px solid #F3ECE3", background: i % 2 === 0 ? "#fff" : "#FCF7F1" }}>
                     <td style={{ padding: "11px 16px", color: "#7C8C8A", fontWeight: 500 }}>{g.year}</td>
-                    <td style={{ padding: "11px 16px", fontWeight: 500 }}>{g.org}</td>
+                    <td style={{ padding: "11px 16px", fontWeight: 500 }}>{orgLabel(g.org, granteeNotes)}</td>
                     <td style={{ padding: "11px 16px" }}>
                       <span style={{ background: (CAT_COLORS[g.category] || "#999") + "18", color: CAT_COLORS[g.category] || "#999", borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" }}>{g.category}</span>
                     </td>
