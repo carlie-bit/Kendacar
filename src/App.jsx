@@ -726,7 +726,7 @@ function SignInPanel() {
           <input type="password" autoComplete="new-password" value={pw2} onChange={e => setPw2(e.target.value)} style={field} />
         </FormField>
         {error}
-        <button type="submit" disabled={busy} style={primary}>{busy ? "Saving\u2026" : "Create my password"}</button>
+        <button type="submit" disabled={busy} style={primary}>{busy ? "Saving…" : "Create my password"}</button>
         <button type="button" style={{ ...quiet, marginTop: 14 }} onClick={() => go("signin")}>I already have a password</button>
       </form>
     );
@@ -737,7 +737,7 @@ function SignInPanel() {
         <p style={{ ...note, marginBottom: 14 }}>Enter your email and we'll send a link to choose a new password.</p>
         {emailField}
         {error}
-        <button type="submit" disabled={busy} style={primary}>{busy ? "Sending\u2026" : "Email me a reset link"}</button>
+        <button type="submit" disabled={busy} style={primary}>{busy ? "Sending…" : "Email me a reset link"}</button>
         <button type="button" style={{ ...quiet, marginTop: 14 }} onClick={() => go("signin")}>Back to sign in</button>
       </form>
     );
@@ -749,7 +749,7 @@ function SignInPanel() {
         <input type="password" autoComplete="current-password" value={pw} onChange={e => setPw(e.target.value)} style={field} />
       </FormField>
       {error}
-      <button type="submit" disabled={busy} style={primary}>{busy ? "Signing in\u2026" : "Sign in"}</button>
+      <button type="submit" disabled={busy} style={primary}>{busy ? "Signing in…" : "Sign in"}</button>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginTop: 14, flexWrap: "wrap" }}>
         <button type="button" style={quiet} onClick={() => go("create")}>First time? Create your password</button>
         <button type="button" style={quiet} onClick={() => go("forgot")}>Forgot password?</button>
@@ -783,7 +783,7 @@ function SetPasswordScreen() {
         </FormField>
         {msg && <div style={{ color: "#B5451B", fontSize: 13, marginBottom: 12 }}>{msg}</div>}
         <button type="submit" disabled={busy} style={{ width: "100%", background: TEAL, color: "#fff", border: "none", borderRadius: 12, padding: "12px 22px", fontSize: 15, fontWeight: 700, fontFamily: FONT_BODY, cursor: "pointer", opacity: busy ? 0.6 : 1 }}>
-          {busy ? "Saving\u2026" : "Save and continue"}
+          {busy ? "Saving…" : "Save and continue"}
         </button>
       </form>
     </NoticeScreen>
@@ -831,7 +831,7 @@ function InquiryForm() {
       {state === "missing" && <div style={{ color: "#B5451B", fontSize: 13, marginBottom: 12, fontFamily: FONT_BODY }}>Please add your name, email and a message.</div>}
       {state === "error" && <div style={{ color: "#B5451B", fontSize: 13, marginBottom: 12, fontFamily: FONT_BODY }}>We couldn't send that just now. Please write to us at the address above.</div>}
       <button type="submit" disabled={state === "sending"} style={{ background: CORAL, color: "#fff", border: "none", borderRadius: 12, padding: "12px 24px", fontSize: 15, fontWeight: 700, fontFamily: FONT_BODY, cursor: "pointer", opacity: state === "sending" ? 0.6 : 1 }}>
-        {state === "sending" ? "Sending\u2026" : "Send"}
+        {state === "sending" ? "Sending…" : "Send"}
       </button>
     </form>
   );
@@ -976,6 +976,19 @@ function PulseLanding({ setView, goGrantee, narrow }) {
             Kendacar gives quietly to the communities it calls home — backing the organizations that keep those places whole, and standing by the older teens stepping into adulthood. The family gives in, the corpus grows, and each year a portion goes out.
           </p>
 
+          {signedIn && (
+            <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 26 }}>
+              <button onClick={() => setView("request-grant")} style={{ background: CORAL, color: "#fff", border: "none", borderRadius: 14, padding: narrow ? "14px 22px" : "16px 30px", fontSize: narrow ? 15.5 : 17, fontWeight: 800, fontFamily: FONT_BODY, cursor: "pointer", boxShadow: "0 6px 18px rgba(0,0,0,0.18)", textAlign: "left" }}>
+                Recommend a Grant →
+                <div style={{ fontSize: 12.5, fontWeight: 600, opacity: 0.9, marginTop: 2 }}>Suggest an organization for a gift</div>
+              </button>
+              <button onClick={() => setView("contribute")} style={{ background: "#fff", color: TEAL, border: "none", borderRadius: 14, padding: narrow ? "14px 22px" : "16px 30px", fontSize: narrow ? 15.5 : 17, fontWeight: 800, fontFamily: FONT_BODY, cursor: "pointer", boxShadow: "0 6px 18px rgba(0,0,0,0.18)", textAlign: "left" }}>
+                Make a Contribution →
+                <div style={{ fontSize: 12.5, fontWeight: 600, color: "#5E7C7A", marginTop: 2 }}>Record a gift into the foundation</div>
+              </button>
+            </div>
+          )}
+
           <div style={{ display: "flex", alignItems: "center", gap: narrow ? 4 : 16, marginTop: 40, flexWrap: narrow ? "wrap" : "nowrap" }}>
             <FlowNode label="Contributed In" value={fmtK(totalReceived)} sub="since 2000" />
             <div style={{ fontSize: 28, color: "#5FA3A3", padding: narrow ? "0 4px" : "0 8px" }}>&rarr;</div>
@@ -1008,17 +1021,6 @@ function PulseLanding({ setView, goGrantee, narrow }) {
           })}
         </div>
 
-        {/* CTAs */}
-        {signedIn && (<Card style={{ padding: narrow ? "22px" : "26px 30px", marginBottom: 40, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 16, background: "#FBF4EC" }}>
-          <div>
-            <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 22, color: INK }}>Take part</div>
-            <div style={{ fontSize: 14, color: "#7C8C8A", marginTop: 4, fontFamily: FONT_BODY }}>Recommend a grant, or record a contribution to the fund.</div>
-          </div>
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-            <button onClick={() => setView("request-grant")} style={{ background: CORAL, color: "#fff", border: "none", borderRadius: 12, padding: "12px 22px", fontSize: 14.5, fontWeight: 700, fontFamily: FONT_BODY, cursor: "pointer" }}>Recommend a Grant</button>
-            <button onClick={() => setView("contribute")} style={{ background: "#fff", color: TEAL, border: "1.5px solid " + TEAL, borderRadius: 12, padding: "12px 22px", fontSize: 14.5, fontWeight: 700, fontFamily: FONT_BODY, cursor: "pointer" }}>Make a Contribution</button>
-          </div>
-        </Card>)}
 
         {/* Explore cards */}
         <SectionTitle title="Explore" sub="Dive into any part of the foundation" />
@@ -1648,7 +1650,7 @@ function GrantsView({ narrow }) {
                           display: "inline-flex", alignItems: "center", gap: 4,
                         }}>
                           {label}
-                          <span style={{ fontSize: 8, opacity: sortKey === key ? 1 : 0.3 }}>{sortKey === key && sortDir === "asc" ? "\u25B2" : "\u25BC"}</span>
+                          <span style={{ fontSize: 8, opacity: sortKey === key ? 1 : 0.3 }}>{sortKey === key && sortDir === "asc" ? "▲" : "▼"}</span>
                         </button>
                       ) : label}
                     </th>
@@ -2628,7 +2630,7 @@ function GrantReceiptButton({ grant, docs, onChange, readOnly }) {
 
   if (readOnly) {
     return doc
-      ? <MiniButton kind="save" onClick={open} disabled={busy} title="Open the acknowledgment this organization sent back">{busy ? "\u2026" : "\u2713 Receipt from org"}</MiniButton>
+      ? <MiniButton kind="save" onClick={open} disabled={busy} title="Open the acknowledgment this organization sent back">{busy ? "…" : "✓ Receipt from org"}</MiniButton>
       : <span style={{ fontSize: 11.5, color: "#C8BBA8" }}>not yet received</span>;
   }
   return (
@@ -2637,12 +2639,12 @@ function GrantReceiptButton({ grant, docs, onChange, readOnly }) {
              accept=".pdf,.png,.jpg,.jpeg,.heic,.doc,.docx" />
       {doc
         ? <>
-            <MiniButton kind="save" onClick={open} disabled={busy} title="Open the acknowledgment this organization sent back">{busy ? "\u2026" : "\u2713 Receipt from org"}</MiniButton>
+            <MiniButton kind="save" onClick={open} disabled={busy} title="Open the acknowledgment this organization sent back">{busy ? "…" : "✓ Receipt from org"}</MiniButton>
             <button onClick={() => fileRef.current && fileRef.current.click()} disabled={busy} style={subAction(false)} title="Upload a different file in its place">Replace</button>
             <button onClick={remove} disabled={busy} style={subAction(true)} title="Delete this attachment">Remove</button>
           </>
         : <MiniButton kind="cancel" onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}>
-            {busy ? "Uploading\u2026" : "Attach receipt from org"}
+            {busy ? "Uploading…" : "Attach receipt from org"}
           </MiniButton>}
     </>
   );
@@ -2692,7 +2694,7 @@ function GiftDocButton({ gift, docs, onChange, readOnly }) {
     finally { setBusy(false); }
   }
   if (readOnly) {
-    return doc ? <MiniButton kind="save" onClick={open} disabled={busy}>{busy ? "\u2026" : "\u2713 On file"}</MiniButton> : null;
+    return doc ? <MiniButton kind="save" onClick={open} disabled={busy}>{busy ? "…" : "✓ On file"}</MiniButton> : null;
   }
   return (
     <>
@@ -2700,11 +2702,11 @@ function GiftDocButton({ gift, docs, onChange, readOnly }) {
              accept=".pdf,.doc,.docx,.png,.jpg,.jpeg" />
       {doc
         ? <>
-            <MiniButton kind="save" onClick={open} disabled={busy}>{busy ? "\u2026" : "\u2713 On file"}</MiniButton>
+            <MiniButton kind="save" onClick={open} disabled={busy}>{busy ? "…" : "✓ On file"}</MiniButton>
             <button onClick={() => fileRef.current && fileRef.current.click()} disabled={busy} style={subAction(false)} title="Upload a different file in its place">Replace</button>
           </>
         : <MiniButton kind="cancel" onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}>
-            {busy ? "\u2026" : "Attach signed copy"}
+            {busy ? "…" : "Attach signed copy"}
           </MiniButton>}
     </>
   );
@@ -2802,7 +2804,7 @@ function GiftReceiptButton({ gift, signer, onDone }) {
     } catch (e) { alert("Couldn't build the receipt: " + e.message); }
     finally { setBusy(false); }
   }
-  return <MiniButton kind="edit" onClick={go} disabled={busy}>{busy ? "…" : (gift.receiptDate ? "Regenerate \u2192" : "Receipt for donor \u2192")}</MiniButton>;
+  return <MiniButton kind="edit" onClick={go} disabled={busy}>{busy ? "…" : (gift.receiptDate ? "Regenerate →" : "Receipt for donor →")}</MiniButton>;
 }
 
 // Link straight to a tax year's Drive folder, so a preparer isn't hunting for paperwork.
@@ -2834,7 +2836,7 @@ function TaxFolderLink({ year, url, onChange, compact, readOnly }) {
       {!readOnly && <button onClick={edit} disabled={busy} style={{
         background: "none", border: "none", padding: 0, cursor: busy ? "default" : "pointer",
         color: "#9B8E80", fontSize: compact ? 11 : 11.5, fontFamily: FONT_BODY, textDecoration: "underline",
-      }}>{busy ? "\u2026" : (url ? "edit" : "+ add " + year + " folder link")}</button>}
+      }}>{busy ? "…" : (url ? "edit" : "+ add " + year + " folder link")}</button>}
     </span>
   );
 }
@@ -2857,7 +2859,7 @@ function GrantLetterButton({ grant, signer }) {
   return (
     <MiniButton kind="edit" onClick={go} disabled={busy}
       title="Cover letter to print and mail in the same envelope as the check">
-      {busy ? "…" : "Letter to send with check \u2192"}
+      {busy ? "…" : "Letter to send with check →"}
     </MiniButton>
   );
 }
@@ -3219,7 +3221,7 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
               {note?.community && <span style={{ background: SUN + "26", color: "#9A7B1E", borderRadius: 20, padding: "3px 12px", fontSize: 11, fontWeight: 700 }}>{note.community}</span>}
             </div>
             <h2 style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: narrow ? 26 : 32, margin: "12px 0 4px", color: INK, lineHeight: 1.05 }}>{(note && note.displayName) || rec.org}</h2>
-            <div style={{ fontSize: 13, color: "#7C8C8A", fontFamily: FONT_BODY }}>{rec.pending ? "No grants yet \u2014 profile ready for the first one" : "Grantee #" + rank + " by total support \u00b7 supported across " + rec.yearCount + " year" + (rec.yearCount > 1 ? "s" : "")}</div>
+            <div style={{ fontSize: 13, color: "#7C8C8A", fontFamily: FONT_BODY }}>{rec.pending ? "No grants yet — profile ready for the first one" : "Grantee #" + rank + " by total support · supported across " + rec.yearCount + " year" + (rec.yearCount > 1 ? "s" : "")}</div>
             {note && note.website && (
               <a href={note.website} target="_blank" rel="noopener noreferrer" style={{ display: "inline-block", marginTop: 10, color: TEAL, fontSize: 13.5, fontWeight: 700, textDecoration: "none", fontFamily: FONT_BODY }}>Visit website &rarr;</a>
             )}
@@ -3227,7 +3229,7 @@ function GranteeDetail({ org, setView, goGrantee, narrow }) {
           <div style={{ textAlign: "right" }}>
             <div style={{ fontSize: 11, fontFamily: FONT_BODY, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "#7C8C8A" }}>Total Received</div>
             <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 40, color: TEAL, lineHeight: 1 }}>{fmt(rec.total)}</div>
-            <div style={{ fontSize: 12, color: "#7C8C8A", marginTop: 4 }}>{rec.pending ? "awaiting first grant" : rec.count + " grant" + (rec.count > 1 ? "s" : "") + " \u00b7 " + rec.firstYear + "\u2013" + rec.lastYear}</div>
+            <div style={{ fontSize: 12, color: "#7C8C8A", marginTop: 4 }}>{rec.pending ? "awaiting first grant" : rec.count + " grant" + (rec.count > 1 ? "s" : "") + " · " + rec.firstYear + "–" + rec.lastYear}</div>
             {signedIn && !editingProfile && <div style={{ marginTop: 10 }}><MiniButton kind="edit" onClick={() => setEditingProfile(true)}>Edit profile</MiniButton></div>}
           </div>
         </div>
@@ -3803,6 +3805,142 @@ function ProcessingQueue({ narrow, setView, onChange }) {
 //  MAIN APP
 // =============================================================================
 
+// =============================================================================
+//  ACCESS  (family only): who can sign in to Kendacar
+// =============================================================================
+
+const ACCESS_ROLES = { admin: "Family · can view and edit", advisor: "Advisor · view only" };
+const ACCESS_ERRORS = {
+  not_allowed: "Only family members can change access.",
+  invalid_email: "That doesn't look like an email address.",
+  cannot_remove_self: "You can't remove yourself.",
+  cannot_demote_self: "You can't change yourself to view only.",
+};
+const accessError = e => {
+  const k = Object.keys(ACCESS_ERRORS).find(key => String(e && e.message).includes(key));
+  return k ? ACCESS_ERRORS[k] : (e && e.message) || "Something went wrong.";
+};
+const inviteMailto = (addr, role) => {
+  const subject = "Your Kendacar Foundation sign-in";
+  const body =
+    "Hi,\n\nYou now have " + (role === "advisor" ? "view-only " : "") + "access to the Kendacar Foundation site.\n\n" +
+    "1. Go to https://kendacar.org and choose Sign in, then \"Create your password\".\n" +
+    "2. Use this email address: " + addr + "\n" +
+    "3. We'll email you a confirmation link. Click it and you're in.\n\n" +
+    "After that, just sign in with your email and password. If you ever forget it, use \"Forgot password\".\n\n" +
+    "— Kendacar Foundation";
+  return "mailto:" + encodeURIComponent(addr) + "?subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
+};
+
+function AccessView({ narrow }) {
+  const { session, setSession, email: me } = useAuth();
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState("");
+  const [addr, setAddr] = useState("");
+  const [role, setRole] = useState("admin");
+  const [justAdded, setJustAdded] = useState(null);
+
+  async function load() {
+    try { setRows(await authedGet(session, setSession, "rpc/kendacar_access_list")); }
+    catch (e) { setErr(accessError(e)); setRows([]); }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function add(e) {
+    e.preventDefault();
+    const clean = addr.trim().toLowerCase();
+    if (!clean) return;
+    setBusy("add"); setErr("");
+    try {
+      await authedWrite(session, setSession, "POST", "rpc/kendacar_access_set", { p_email: clean, p_role: role });
+      setJustAdded({ email: clean, role }); setAddr(""); await load();
+    } catch (e2) { setErr(accessError(e2)); }
+    finally { setBusy(""); }
+  }
+  async function changeRole(r, next) {
+    setBusy(r.email); setErr("");
+    try { await authedWrite(session, setSession, "POST", "rpc/kendacar_access_set", { p_email: r.email, p_role: next }); await load(); }
+    catch (e) { setErr(accessError(e)); }
+    finally { setBusy(""); }
+  }
+  async function remove(r) {
+    if (!window.confirm("Remove " + r.email + "? They won't be able to sign in to Kendacar anymore.")) return;
+    setBusy(r.email); setErr("");
+    try { await authedWrite(session, setSession, "POST", "rpc/kendacar_access_remove", { p_email: r.email }); await load(); }
+    catch (e) { setErr(accessError(e)); }
+    finally { setBusy(""); }
+  }
+
+  const status = r => r.last_sign_in
+    ? { text: "Signed in " + fmtDate(r.last_sign_in), color: "#0E7A5F", bg: "#EAF7F2" }
+    : r.confirmed ? { text: "Password set", color: "#0E7A5F", bg: "#EAF7F2" }
+    : r.has_account ? { text: "Waiting on their confirmation email", color: "#9A7B1E", bg: "#FFF6E5" }
+    : { text: "Hasn't created a password yet", color: "#7C8C8A", bg: "#F3ECE3" };
+  const isMe = r => (r.email || "").toLowerCase() === (me || "").toLowerCase();
+  const families = (rows || []).filter(r => r.role === "admin").length;
+
+  return (
+    <div style={{ maxWidth: 1140, margin: "0 auto", padding: narrow ? "28px 16px" : "36px 40px" }}>
+      <SectionTitle title="Access" sub="Who can sign in to Kendacar. Only people on this list can create a password." />
+
+      <Card style={{ padding: narrow ? 20 : 26, marginBottom: 24, background: "#FBF4EC" }}>
+        <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, marginBottom: 12 }}>Add someone</div>
+        <form onSubmit={add} style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "minmax(0,1.4fr) minmax(0,1fr) auto", gap: 10, alignItems: "center" }}>
+          <input type="email" value={addr} onChange={e => setAddr(e.target.value)} placeholder="name@email.com" style={{ ...formInput, fontSize: 14.5, padding: "11px 14px" }} />
+          <select value={role} onChange={e => setRole(e.target.value)} style={{ ...formInput, fontSize: 14.5, padding: "11px 14px" }}>
+            <option value="admin">{ACCESS_ROLES.admin}</option>
+            <option value="advisor">{ACCESS_ROLES.advisor}</option>
+          </select>
+          <button type="submit" disabled={busy === "add" || !addr.trim()} style={{ background: TEAL, color: "#fff", border: "none", borderRadius: 10, padding: "11px 22px", fontSize: 14.5, fontWeight: 700, fontFamily: FONT_BODY, cursor: "pointer", opacity: busy === "add" || !addr.trim() ? 0.6 : 1 }}>
+            {busy === "add" ? "Adding…" : "Add"}
+          </button>
+        </form>
+        {justAdded && (
+          <div style={{ marginTop: 14, background: "#EAF7F2", border: "1px solid #BFE0DE", borderRadius: 10, padding: "12px 14px", fontSize: 13.5, color: "#1F3A38", fontFamily: FONT_BODY, lineHeight: 1.55 }}>
+            <strong>{justAdded.email}</strong> is on the list. Let them know to go to kendacar.org and choose <em>Create your password</em>.{" "}
+            <a href={inviteMailto(justAdded.email, justAdded.role)} style={{ color: TEAL, fontWeight: 800 }}>Write them an email →</a>
+          </div>
+        )}
+        {err && <div style={{ color: "#B5451B", fontSize: 13, marginTop: 10, fontFamily: FONT_BODY }}>{err}</div>}
+      </Card>
+
+      <Card style={{ padding: narrow ? "8px 16px" : "8px 26px" }}>
+        {rows === null && <div style={{ padding: 24, color: "#7C8C8A", fontFamily: FONT_BODY }}>Loading…</div>}
+        {rows && rows.length === 0 && !err && <div style={{ padding: 24, color: "#7C8C8A", fontFamily: FONT_BODY }}>No one is on the list.</div>}
+        {(rows || []).map((r, i) => {
+          const st = status(r);
+          const locked = isMe(r);
+          return (
+            <div key={r.email} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", padding: "14px 0", borderTop: i ? "1px solid #F3ECE3" : "none" }}>
+              <div style={{ minWidth: 0, flex: "1 1 260px" }}>
+                <div style={{ fontSize: 14.5, fontWeight: 700, color: INK, fontFamily: FONT_BODY, overflowWrap: "anywhere" }}>
+                  {r.email}{locked && <span style={{ color: "#9B8E80", fontWeight: 600 }}> (you)</span>}
+                </div>
+                <span style={{ display: "inline-block", marginTop: 5, fontSize: 11.5, fontWeight: 800, color: st.color, background: st.bg, borderRadius: 20, padding: "2px 10px", fontFamily: FONT_BODY }}>{st.text}</span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <select value={r.role} disabled={locked || busy === r.email} onChange={e => changeRole(r, e.target.value)} title={locked ? "You can't change your own access" : "Change access"}
+                  style={{ ...formInput, width: "auto", fontSize: 13.5, padding: "8px 12px", opacity: locked ? 0.6 : 1 }}>
+                  <option value="admin">{ACCESS_ROLES.admin}</option>
+                  <option value="advisor">{ACCESS_ROLES.advisor}</option>
+                </select>
+                {!r.confirmed && <a href={inviteMailto(r.email, r.role)} style={{ color: TEAL, fontSize: 13, fontWeight: 700, textDecoration: "none", fontFamily: FONT_BODY }}>Email invite</a>}
+                {!locked && <button onClick={() => remove(r)} disabled={busy === r.email} style={subAction(true)}>Remove</button>}
+              </div>
+            </div>
+          );
+        })}
+      </Card>
+      {rows && rows.length > 0 && (
+        <div style={{ fontSize: 12.5, color: "#7C8C8A", marginTop: 12, fontFamily: FONT_BODY }}>
+          {families} family · {rows.length - families} advisor{rows.length - families === 1 ? "" : "s"}. Removing someone stops them signing in; you can add them back anytime.
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [view, setView] = useState("pulse");
   const [selectedOrg, setSelectedOrg] = useState(null);
@@ -3899,7 +4037,7 @@ export default function App() {
   const pill = { background: TEAL, color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontSize: 14, fontWeight: 700, fontFamily: FONT_BODY, cursor: "pointer" };
   const pillQuiet = { ...pill, background: "#fff", color: TEAL, border: "1.5px solid " + TEAL };
 
-  if (restoring || (session && role === null)) return shell(<NoticeScreen title="Signing you in\u2026" />);
+  if (restoring || (session && role === null)) return shell(<NoticeScreen title="Signing you in…" />);
   if (!session) return shell(<WelcomePage narrow={narrow} />);
   if (resetting) return shell(<SetPasswordScreen />);
   if (role === "none") return shell(
@@ -3914,23 +4052,24 @@ export default function App() {
 
   const isAdmin = auth.signedIn;
   // Submitting and processing are family actions; advisors land on the dashboard instead.
-  const current = !isAdmin && ["queue", "request-grant", "contribute"].includes(view) ? "pulse" : view;
+  const current = !isAdmin && ["queue", "request-grant", "contribute", "access"].includes(view) ? "pulse" : view;
   const barLink = { background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 12, fontWeight: 700, textDecoration: "underline" };
 
   return shell(
     <div style={{ minHeight: "100vh", background: "#FFF8F2", fontFamily: "'Nunito Sans', sans-serif", color: "#1F3A38" }}>
       <NavBar view={current} setView={nav} narrow={narrow} signedIn={isAdmin} pending={pending} />
       <div style={{ background: isAdmin ? "#0E7A5F" : "#3A6B9C", color: "#fff", textAlign: "center", fontSize: 12, padding: "7px 16px", fontFamily: "'Nunito Sans', sans-serif" }}>
-        {isAdmin ? "Edit mode" : "Read-only access"} \u2014 signed in as {auth.email} \u00b7{" "}
+        {isAdmin ? "Edit mode" : "Read-only access"} — signed in as {auth.email} ·{" "}
         {isAdmin && <>
           <button onClick={() => nav("queue")} style={barLink}>Review submissions</button>
-          {pending > 0 && <span style={{ background: CORAL, color: "#fff", borderRadius: 20, padding: "1px 8px", fontSize: 11, fontWeight: 800, marginLeft: 6 }}>{pending}</span>} \u00b7{" "}
+          {pending > 0 && <span style={{ background: CORAL, color: "#fff", borderRadius: 20, padding: "1px 8px", fontSize: 11, fontWeight: 800, marginLeft: 6 }}>{pending}</span>} ·{" "}
+          <button onClick={() => nav("access")} style={barLink}>Access</button> ·{" "}
         </>}
         <button onClick={signOut} style={{ ...barLink, color: "#CFEFE5", fontWeight: 600 }}>Sign out</button>
       </div>
 
       {!loaded
-        ? <div style={{ padding: "80px 20px", textAlign: "center", color: "#7C8C8A", fontFamily: FONT_BODY }}>Loading the foundation's records\u2026</div>
+        ? <div style={{ padding: "80px 20px", textAlign: "center", color: "#7C8C8A", fontFamily: FONT_BODY }}>Loading the foundation's records…</div>
         : <>
             {current === "pulse"          && <PulseLanding setView={nav} goGrantee={goGrantee} narrow={narrow} />}
             {current === "investments"    && <InvestmentsView narrow={narrow} />}
@@ -3941,6 +4080,7 @@ export default function App() {
             {current === "request-grant"  && <RequestGrantForm narrow={narrow} setView={nav} />}
             {current === "contribute"     && <ContributionForm narrow={narrow} setView={nav} />}
             {current === "queue"          && <ProcessingQueue narrow={narrow} setView={nav} onChange={refreshPending} />}
+            {current === "access"         && <AccessView narrow={narrow} />}
           </>}
 
       <div style={{ padding: "32px 20px", textAlign: "center", fontSize: 11, color: "#7C8C8A", fontFamily: "'Fredoka', serif", letterSpacing: "0.08em" }}>
