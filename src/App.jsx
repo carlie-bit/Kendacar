@@ -9,7 +9,7 @@ import {
 //  The dashboard reads these tables on load. When an approved person signs in
 //  (magic link to their email), grant/donation/investment entries become
 //  editable right on the page and changes write straight back here — no rebuild,
-//  no git push. If Supabase is unreachable, the FALLBACK data keeps the site up.
+//  no git push. Nothing is bundled: data loads only for signed-in family and advisors.
 // =============================================================================
 
 const SUPABASE_URL = "https://kdmtjvbgeqcjipdnfwty.supabase.co";
@@ -20,14 +20,6 @@ const FUNCTIONS = SUPABASE_URL + "/functions/v1/";
 const SESSION_KEY = "kendacar_session";
 
 // ---- read (uses the public key) ----
-async function sb(path) {
-  const res = await fetch(REST + path, {
-    headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + SUPABASE_KEY },
-  });
-  if (!res.ok) throw new Error("Supabase " + res.status);
-  return res.json();
-}
-
 // ---- session storage ----
 function loadSession() {
   try { return JSON.parse(localStorage.getItem(SESSION_KEY)); } catch { return null; }
@@ -58,15 +50,36 @@ function sessionFromHash() {
 
 // Send a one-time sign-in link to an email. GoTrue reads the return URL from
 // the `redirect_to` query parameter, so it must go on the URL (not the body).
-async function sendMagicLink(email) {
+async function requestSignInCode(email) {
   const redirect = window.location.origin + window.location.pathname;
   const res = await fetch(AUTH + "otp?redirect_to=" + encodeURIComponent(redirect), {
     method: "POST",
     headers: { apikey: SUPABASE_KEY, "Content-Type": "application/json" },
     body: JSON.stringify({ email, create_user: true }),
   });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).msg || "Could not send link (" + res.status + ")");
-  return true;
+  if (res.ok) return true;
+  const j = await res.json().catch(() => ({}));
+  const text = String(j.msg || j.message || j.error_description || "");
+  // New accounts are refused by a database rule unless the email is on the family/advisor list.
+  if (/database error|not_on_allowlist/i.test(text)) throw new Error("That email isn't on the Kendacar list. Check the spelling, or contact the foundation.");
+  if (res.status === 429) throw new Error("Too many attempts. Wait a minute, then try again.");
+  throw new Error(text || "Couldn't send a code (" + res.status + ").");
+}
+
+// Exchange the 6-digit code from the sign-in email for a session. A person's very first
+// sign-in issues a signup code rather than an email code, so try both.
+async function verifySignInCode(email, token) {
+  const attempt = type => fetch(AUTH + "verify", {
+    method: "POST",
+    headers: { apikey: SUPABASE_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({ type, email, token }),
+  });
+  let res = await attempt("email");
+  if (!res.ok) res = await attempt("signup");
+  if (!res.ok) throw new Error("That code didn't work. Check it, or send yourself a new one.");
+  const j = await res.json();
+  return { access_token: j.access_token, refresh_token: j.refresh_token,
+    expires_at: Date.now() + (Number(j.expires_in || 3600) * 1000), email: emailFromToken(j.access_token) };
 }
 
 // Exchange a refresh token for a fresh access token.
@@ -132,17 +145,6 @@ async function fetchQuotes(session, symbols) {
   });
   if (!res.ok) throw new Error("quotes " + res.status);
   return res.json();
-}
-
-// A public form submission (anyone may insert into the form tables).
-async function publicInsert(table, payload) {
-  const res = await fetch(REST + table, {
-    method: "POST",
-    headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + SUPABASE_KEY, "Content-Type": "application/json", Prefer: "return=minimal" },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) throw new Error("Submission failed (" + res.status + "). " + (await res.text().catch(() => "")));
-  return true;
 }
 
 // Upload any file (photo, PDF, doc…) to the grantee-photos bucket (admin only).
@@ -224,16 +226,16 @@ const AuthContext = createContext(null);
 const useAuth = () => useContext(AuthContext);
 
 // Pull every display table in parallel and shape it like the fallback data.
-async function fetchLiveData() {
+async function fetchLiveData(get) {
   const [grants, donations, assets, settings, notes, updates, programs, gifts] = await Promise.all([
-    sb("grants?select=id,year,org,amount,category,check_number,check_date&order=year.desc,amount.desc"),
-    sb("donations?select=id,year,donor,amount&order=year.desc"),
-    sb("investment_assets?select=id,name,value,sort_order&order=sort_order"),
-    sb("settings?select=key,value"),
-    sb("grantee_notes?select=org,display_name,contact,contact_role,contact_email,website,description,community,note,core_outcomes,mailing_address,phone,ein"),
-    sb("grantee_updates?select=id,org,title,body,author,photos,created_at&order=created_at.desc"),
-    sb("grantee_programs?select=id,org,name,purpose,metrics,sort_order,status&order=sort_order"),
-    sb("contribution_gifts?select=id,gift_date,donor,donor_formal,donor_greeting,donor_address,amount,gift_type,securities,note,receipt_date&order=gift_date.desc"),
+    get("grants?select=id,year,org,amount,category,check_number,check_date&order=year.desc,amount.desc"),
+    get("donations?select=id,year,donor,amount&order=year.desc"),
+    get("investment_assets?select=id,name,value,sort_order&order=sort_order"),
+    get("settings?select=key,value"),
+    get("grantee_notes?select=org,display_name,contact,contact_role,contact_email,website,description,community,note,core_outcomes,mailing_address,phone,ein"),
+    get("grantee_updates?select=id,org,title,body,author,photos,created_at&order=created_at.desc"),
+    get("grantee_programs?select=id,org,name,purpose,metrics,sort_order,status&order=sort_order"),
+    get("contribution_gifts?select=id,gift_date,donor,donor_formal,donor_greeting,donor_address,amount,gift_type,securities,note,receipt_date&order=gift_date.desc"),
   ]);
   const setMap = Object.fromEntries(settings.map(s => [s.key, s.value]));
   const noteMap = {};
@@ -260,7 +262,7 @@ async function fetchLiveData() {
   return {
     grants: grants.map(g => ({
       id: g.id, year: Number(g.year), org: g.org, amount: Number(g.amount),
-      category: g.category || ORG_CATEGORIES[g.org] || "Community & Social Services",
+      category: g.category || "Community & Social Services",
       checkNumber: g.check_number || null, checkDate: g.check_date || null,
     })),
     donations: donations.map(d => ({ id: d.id, year: Number(d.year), donor: d.donor, amount: Number(d.amount) })),
@@ -285,341 +287,21 @@ async function fetchLiveData() {
 }
 
 // =============================================================================
-//  FALLBACK GRANT DATA - Kendacar Foundation 2001-2025
-//  (used only if Supabase can't be reached)
+//  DATA  Nothing is bundled with the site. Everything loads from Supabase after a
+//  family member or advisor signs in, so the public code holds no figures or names.
 // =============================================================================
 
-const ORG_CATEGORIES = {
-  "Casa of McHenry County": "Children & Youth",
-  "Big Brothers Big Sisters of McHenry County": "Children & Youth",
-  "Big Brothers Big Sisters of Indian River": "Children & Youth",
-  "Gifford Youth Achievement Center": "Children & Youth",
-  "Holiday Heroes Foundation": "Children & Youth",
-  "Special Olympics": "Children & Youth",
-  "Youth Service Bureau": "Children & Youth",
-  "Canaryville Little League": "Children & Youth",
-  "Project Linus": "Children & Youth",
-  "Miss B Learning Bsse": "Children & Youth",
-  "Alexander Leigh Center for Autism": "Children & Youth",
-  "Northern Illinois Center of Autism": "Children & Youth",
-  "Parla": "Community Development",
-  "Huron County Coalition Against Domestic Violence": "Domestic Violence",
-  "Home of the Sparrow": "Domestic Violence",
-  "Northern Illinois Food Bank": "Food & Hunger",
-  "Crystal Lake Food Pantry": "Food & Hunger",
-  "Food Pantry Indian River County": "Food & Hunger",
-  "Treasure Coast Food Bank": "Food & Hunger",
-  "Harvest Food and Outreach": "Food & Hunger",
-  "Care and Share": "Food & Hunger",
-  "Salvation Army": "Food & Hunger",
-  "Rockford Rescue Mission": "Food & Hunger",
-  "Cleveland Clinic - Indian River": "Healthcare",
-  "Indian River Medical Center": "Healthcare",
-  "Indian River Hospital Foundation": "Healthcare",
-  "Scheurer Hospital": "Healthcare",
-  "VNA and Hospice Foundation": "Healthcare",
-  "Alzheimer's Association": "Healthcare",
-  "Juvenile Diabetes Research Foundation": "Healthcare",
-  "The Wellness Place": "Healthcare",
-  "Senior Resource Associaiton": "Healthcare",
-  "Riverside Theatre": "Arts & Culture",
-  "Vero Beach Museum of Art": "Arts & Culture",
-  "Fort Pierce Magnet School of the arts": "Arts & Culture",
-  "The Learning Alliance": "Education",
-  "The Learning Tree of Crystal Lake": "Education",
-  "The Neighborhood Academy": "Education",
-  "District 47 Giftcard Pgm": "Education",
-  "Vero Beach Elementary School": "Education",
-  "Educational Foundation of Indian River": "Education",
-  "St. John's Northwestern Military Academy": "Education",
-  "Impact 100": "Education",
-  "MCC Foundation": "Education",
-  "Hoover Institution": "Education",
-  "CASA of McHenry County": "Children & Youth",
-  "Habitat for Humanity IRC": "Community Development",
-  "Village of Port Austin": "Community Development",
-  "Max McGraw Wildlife Foundation": "Environment & Wildlife",
-  "Enviromental Learning Center": "Environment & Wildlife",
-  "Indian River Land Trust": "Environment & Wildlife",
-  "Treasure Coast Manatee Foundation": "Environment & Wildlife",
-  "MCKEE Botanical Garden": "Environment & Wildlife",
-  "Indian River Habitat for Humanity ": "Community Development",
-  "Indian River Habitat for Humanity": "Community Development",
-  "Huron Community Foundation": "Community Development",
-  "Huron County Community Foundation": "Community Development",
-  "Huron Development Commission": "Community Development",
-  "Musana Community Development Org": "Community Development",
-  "Indian River Community": "Community Development",
-  "Port Austin Fire Department": "Community Development",
-  "Port Austin Good Fellows": "Community Development",
-  "The Hope for Families Center": "Community & Social Services",
-  "Daisie Bridgewater Hope Center": "Community & Social Services",
-  "St. Luke N.E.W. Life Center": "Community & Social Services",
-  "Options and Advocacy for McHenry County ": "Community & Social Services",
-  "Options and Advocacy for McHenry County": "Community & Social Services",
-  "Indian River County United Against Poverty": "Community & Social Services",
-  "PADS First Congregational Church / McHenry County PADS": "Community & Social Services",
-  "American Red Cross": "Community & Social Services",
-  "Jaycee's": "Community & Social Services",
-  "Junior Priscilla Womens CLub": "Community & Social Services",
-  "Port Austin United  Protestant Church": "Religious",
-  "United Protestant Church (Grayslake)": "Religious",
-  "Port Austin United Protestant Church": "Religious",
-};
-
-const GRANTS = [
-  { id: 176, year: 2026, org: "CASA of McHenry County", amount: 32855 },
-  { id: 177, year: 2026, org: "Habitat for Humanity IRC", amount: 10000 },
-  { id: 178, year: 2026, org: "The Hope for Families Center", amount: 10000 },
-  { id: 179, year: 2026, org: "Village of Port Austin", amount: 62500 },
-  { id: 180, year: 2026, org: "Indian River Habitat for Humanity", amount: 10000 },
-  { id: 181, year: 2025, org: "Northern Illinois Food Bank", amount: 10000 },
-  { id: 182, year: 2025, org: "Hoover Institution", amount: 10000 },
-  { id: 1, year: 2025, org: "Big Brothers Big Sisters of McHenry County", amount: 50000 },
-  { id: 2, year: 2025, org: "Parla", amount: 40000 },
-  { id: 3, year: 2025, org: "Casa of McHenry County", amount: 25000 },
-  { id: 4, year: 2025, org: "Indian River Habitat for Humanity", amount: 10000 },
-  { id: 5, year: 2025, org: "The Learning Alliance", amount: 10000 },
-  { id: 6, year: 2025, org: "Max McGraw Wildlife Foundation", amount: 7500 },
-  { id: 7, year: 2024, org: "Parla", amount: 210000 },
-  { id: 8, year: 2024, org: "Cleveland Clinic - Indian River", amount: 100000 },
-  { id: 9, year: 2024, org: "Port Austin Fire Department", amount: 88000 },
-  { id: 10, year: 2024, org: "Big Brothers Big Sisters of McHenry County", amount: 50000 },
-  { id: 11, year: 2024, org: "The Hope for Families Center", amount: 20000 },
-  { id: 12, year: 2024, org: "District 47 Giftcard Pgm", amount: 12000 },
-  { id: 13, year: 2024, org: "Indian River Habitat for Humanity", amount: 10000 },
-  { id: 14, year: 2024, org: "Northern Illinois Food Bank", amount: 10000 },
-  { id: 15, year: 2024, org: "Max McGraw Wildlife Foundation", amount: 7500 },
-  { id: 16, year: 2023, org: "Treasure Coast Food Bank", amount: 100000 },
-  { id: 17, year: 2023, org: "District 47 Giftcard Pgm", amount: 50000 },
-  { id: 18, year: 2023, org: "Big Brothers Big Sisters of McHenry County", amount: 50000 },
-  { id: 19, year: 2023, org: "Indian River Habitat for Humanity", amount: 20000 },
-  { id: 20, year: 2023, org: "Casa of McHenry County", amount: 20000 },
-  { id: 21, year: 2023, org: "The Learning Alliance", amount: 20000 },
-  { id: 22, year: 2023, org: "Big Brothers Big Sisters of Indian River", amount: 10000 },
-  { id: 23, year: 2023, org: "Max McGraw Wildlife Foundation", amount: 7500 },
-  { id: 24, year: 2023, org: "The Hope for Families Center", amount: 7000 },
-  { id: 25, year: 2023, org: "Northern Illinois Food Bank", amount: 5000 },
-  { id: 26, year: 2022, org: "Senior Resource Associaiton", amount: 50000 },
-  { id: 27, year: 2022, org: "Crystal Lake Food Pantry", amount: 40000 },
-  { id: 28, year: 2022, org: "District 47 Giftcard Pgm", amount: 22500 },
-  { id: 29, year: 2022, org: "Indian River Habitat for Humanity", amount: 10000 },
-  { id: 30, year: 2022, org: "Max McGraw Wildlife Foundation", amount: 7500 },
-  { id: 31, year: 2021, org: "Max McGraw Wildlife Foundation", amount: 20500 },
-  { id: 32, year: 2021, org: "Salvation Army", amount: 20000 },
-  { id: 33, year: 2021, org: "The Learning Alliance", amount: 20000 },
-  { id: 34, year: 2021, org: "Indian River Habitat for Humanity", amount: 15000 },
-  { id: 35, year: 2021, org: "Big Brothers Big Sisters of Indian River", amount: 8000 },
-  { id: 36, year: 2021, org: "Impact 100", amount: 8000 },
-  { id: 37, year: 2021, org: "Riverside Theatre", amount: 5000 },
-  { id: 38, year: 2021, org: "Northern Illinois Food Bank", amount: 5000 },
-  { id: 39, year: 2021, org: "Junior Priscilla Womens CLub", amount: 3000 },
-  { id: 40, year: 2021, org: "VNA and Hospice Foundation", amount: 3000 },
-  { id: 41, year: 2020, org: "District 47 Giftcard Pgm", amount: 31345 },
-  { id: 42, year: 2020, org: "Crystal Lake Food Pantry", amount: 27452 },
-  { id: 43, year: 2020, org: "Huron County Coalition Against Domestic Violence", amount: 25000 },
-  { id: 44, year: 2020, org: "The Learning Alliance", amount: 24000 },
-  { id: 45, year: 2020, org: "Indian River Habitat for Humanity", amount: 15000 },
-  { id: 46, year: 2020, org: "Indian River Medical Center", amount: 15000 },
-  { id: 47, year: 2020, org: "Big Brothers Big Sisters of Indian River", amount: 8500 },
-  { id: 48, year: 2020, org: "Treasure Coast Food Bank", amount: 8000 },
-  { id: 49, year: 2020, org: "Junior Priscilla Womens CLub", amount: 6000 },
-  { id: 50, year: 2020, org: "Riverside Theatre", amount: 5000 },
-  { id: 51, year: 2020, org: "Indian River County United Against Poverty", amount: 2000 },
-  { id: 52, year: 2020, org: "The Hope for Families Center", amount: 2000 },
-  { id: 53, year: 2020, org: "United Protestant Church (Grayslake)", amount: 2000 },
-  { id: 54, year: 2020, org: "Daisie Bridgewater Hope Center", amount: 1500 },
-  { id: 55, year: 2020, org: "Impact 100", amount: 1000 },
-  { id: 56, year: 2020, org: "Food Pantry Indian River County", amount: 1000 },
-  { id: 57, year: 2020, org: "MCKEE Botanical Garden", amount: 500 },
-  { id: 58, year: 2019, org: "The Learning Alliance", amount: 11000 },
-  { id: 59, year: 2019, org: "Indian River Habitat for Humanity", amount: 10000 },
-  { id: 60, year: 2019, org: "Casa of McHenry County", amount: 8000 },
-  { id: 61, year: 2019, org: "District 47 Giftcard Pgm", amount: 6000 },
-  { id: 62, year: 2019, org: "Riverside Theatre", amount: 5000 },
-  { id: 63, year: 2019, org: "Big Brothers Big Sisters of Indian River", amount: 5000 },
-  { id: 64, year: 2019, org: "Vero Beach Elementary School", amount: 5000 },
-  { id: 65, year: 2019, org: "Educational Foundation of Indian River", amount: 3000 },
-  { id: 66, year: 2019, org: "Miss B Learning Bsse", amount: 2500 },
-  { id: 67, year: 2019, org: "Gifford Youth Achievement Center", amount: 2250 },
-  { id: 68, year: 2019, org: "Treasure Coast Food Bank", amount: 2000 },
-  { id: 69, year: 2019, org: "Huron Community Foundation", amount: 2000 },
-  { id: 70, year: 2019, org: "Junior Priscilla Womens CLub", amount: 2000 },
-  { id: 71, year: 2019, org: "Impact 100", amount: 1200 },
-  { id: 72, year: 2019, org: "Salvation Army", amount: 802 },
-  { id: 73, year: 2019, org: "Project Linus", amount: 250 },
-  { id: 74, year: 2018, org: "Daisie Bridgewater Hope Center", amount: 11000 },
-  { id: 75, year: 2018, org: "Indian River Habitat for Humanity", amount: 10000 },
-  { id: 76, year: 2018, org: "Port Austin United  Protestant Church", amount: 10000 },
-  { id: 77, year: 2018, org: "The Learning Alliance", amount: 10000 },
-  { id: 78, year: 2018, org: "District 47 Giftcard Pgm", amount: 9293 },
-  { id: 79, year: 2018, org: "Treasure Coast Manatee Foundation", amount: 9000 },
-  { id: 80, year: 2018, org: "Casa of McHenry County", amount: 7000 },
-  { id: 81, year: 2018, org: "Riverside Theatre", amount: 5000 },
-  { id: 82, year: 2018, org: "Big Brothers Big Sisters of Indian River", amount: 5000 },
-  { id: 83, year: 2018, org: "Junior Priscilla Womens CLub", amount: 2000 },
-  { id: 84, year: 2018, org: "Salvation Army", amount: 1774 },
-  { id: 85, year: 2018, org: "Vero Beach Elementary School", amount: 1000 },
-  { id: 86, year: 2017, org: "Indian River Medical Center", amount: 15000 },
-  { id: 87, year: 2017, org: "District 47 Giftcard Pgm", amount: 10568 },
-  { id: 88, year: 2017, org: "Indian River Habitat for Humanity", amount: 10000 },
-  { id: 89, year: 2017, org: "The Learning Alliance", amount: 10000 },
-  { id: 90, year: 2017, org: "Casa of McHenry County", amount: 5000 },
-  { id: 91, year: 2017, org: "Riverside Theatre", amount: 5000 },
-  { id: 92, year: 2017, org: "Gifford Youth Achievement Center", amount: 3000 },
-  { id: 93, year: 2017, org: "Treasure Coast Food Bank", amount: 2000 },
-  { id: 94, year: 2017, org: "Options and Advocacy for McHenry County", amount: 2000 },
-  { id: 95, year: 2017, org: "Holiday Heroes Foundation", amount: 2000 },
-  { id: 96, year: 2017, org: "Junior Priscilla Womens CLub", amount: 2000 },
-  { id: 97, year: 2017, org: "Indian River Community", amount: 1050 },
-  { id: 98, year: 2017, org: "Canaryville Little League", amount: 1000 },
-  { id: 99, year: 2017, org: "Daisie Bridgewater Hope Center", amount: 1000 },
-  { id: 100, year: 2017, org: "Salvation Army", amount: 768 },
-  { id: 101, year: 2017, org: "Indian River County United Against Poverty", amount: 500 },
-  { id: 102, year: 2016, org: "Vero Beach Museum of Art", amount: 14000 },
-  { id: 103, year: 2016, org: "Indian River Habitat for Humanity", amount: 10000 },
-  { id: 104, year: 2016, org: "The Learning Alliance", amount: 10000 },
-  { id: 105, year: 2016, org: "District 47 Giftcard Pgm", amount: 6000 },
-  { id: 106, year: 2016, org: "Options and Advocacy for McHenry County", amount: 5000 },
-  { id: 107, year: 2016, org: "St. Luke N.E.W. Life Center", amount: 5000 },
-  { id: 108, year: 2016, org: "Holiday Heroes Foundation", amount: 3500 },
-  { id: 109, year: 2016, org: "Fort Pierce Magnet School of the arts", amount: 2000 },
-  { id: 110, year: 2016, org: "Canaryville Little League", amount: 1500 },
-  { id: 111, year: 2015, org: "Indian River Hospital Foundation", amount: 30000 },
-  { id: 112, year: 2015, org: "Enviromental Learning Center", amount: 10100 },
-  { id: 113, year: 2015, org: "Indian River Habitat for Humanity", amount: 10000 },
-  { id: 114, year: 2015, org: "Parla", amount: 5000 },
-  { id: 115, year: 2015, org: "Casa of McHenry County", amount: 5000 },
-  { id: 116, year: 2015, org: "Gifford Youth Achievement Center", amount: 5000 },
-  { id: 117, year: 2015, org: "Canaryville Little League", amount: 2500 },
-  { id: 118, year: 2015, org: "Harvest Food and Outreach", amount: 2500 },
-  { id: 119, year: 2015, org: "Treasure Coast Food Bank", amount: 2000 },
-  { id: 120, year: 2014, org: "Huron County Coalition Against Domestic Violence", amount: 39750 },
-  { id: 121, year: 2014, org: "Enviromental Learning Center", amount: 4900 },
-  { id: 122, year: 2014, org: "Northern Illinois Center of Autism", amount: 2500 },
-  { id: 123, year: 2014, org: "Casa of McHenry County", amount: 2500 },
-  { id: 124, year: 2014, org: "Musana Community Development Org", amount: 2500 },
-  { id: 125, year: 2014, org: "Care and Share", amount: 2000 },
-  { id: 126, year: 2014, org: "Indian River Habitat for Humanity", amount: 1500 },
-  { id: 127, year: 2013, org: "Enviromental Learning Center", amount: 7000 },
-  { id: 128, year: 2013, org: "The Neighborhood Academy", amount: 5000 },
-  { id: 129, year: 2013, org: "Alexander Leigh Center for Autism", amount: 2500 },
-  { id: 130, year: 2013, org: "MCC Foundation", amount: 1000 },
-  { id: 131, year: 2013, org: "Indian River Habitat for Humanity", amount: 1000 },
-  { id: 132, year: 2013, org: "Indian River Land Trust", amount: 500 },
-  { id: 133, year: 2012, org: "Huron County Coalition Against Domestic Violence", amount: 6270 },
-  { id: 134, year: 2012, org: "Enviromental Learning Center", amount: 3500 },
-  { id: 135, year: 2012, org: "The Neighborhood Academy", amount: 1000 },
-  { id: 136, year: 2011, org: "Huron County Coalition Against Domestic Violence", amount: 12000 },
-  { id: 137, year: 2011, org: "Salvation Army", amount: 2158 },
-  { id: 138, year: 2011, org: "Parla", amount: 1000 },
-  { id: 139, year: 2011, org: "MCC Foundation", amount: 350 },
-  { id: 140, year: 2010, org: "Huron County Coalition Against Domestic Violence", amount: 84403 },
-  { id: 141, year: 2010, org: "The Learning Tree of Crystal Lake", amount: 150 },
-  { id: 142, year: 2009, org: "Huron County Coalition Against Domestic Violence", amount: 60000 },
-  { id: 143, year: 2008, org: "Huron County Coalition Against Domestic Violence", amount: 50000 },
-  { id: 144, year: 2008, org: "Youth Service Bureau", amount: 250 },
-  { id: 145, year: 2007, org: "Huron County Coalition Against Domestic Violence", amount: 100000 },
-  { id: 146, year: 2007, org: "The Neighborhood Academy", amount: 100 },
-  { id: 147, year: 2007, org: "Scheurer Hospital", amount: 100 },
-  { id: 148, year: 2006, org: "Huron County Coalition Against Domestic Violence", amount: 59456 },
-  { id: 149, year: 2005, org: "Huron County Coalition Against Domestic Violence", amount: 50000 },
-  { id: 150, year: 2005, org: "Alzheimer's Association", amount: 200 },
-  { id: 151, year: 2005, org: "Huron County Community Foundation", amount: 200 },
-  { id: 152, year: 2005, org: "The Neighborhood Academy", amount: 100 },
-  { id: 153, year: 2005, org: "Scheurer Hospital", amount: 100 },
-  { id: 154, year: 2004, org: "Huron County Coalition Against Domestic Violence", amount: 58250 },
-  { id: 155, year: 2004, org: "The Neighborhood Academy", amount: 500 },
-  { id: 156, year: 2004, org: "Care and Share", amount: 200 },
-  { id: 157, year: 2003, org: "Huron Community Foundation", amount: 18405 },
-  { id: 158, year: 2003, org: "Huron Development Commission", amount: 1000 },
-  { id: 159, year: 2003, org: "St. John's Northwestern Military Academy", amount: 500 },
-  { id: 160, year: 2002, org: "Care and Share", amount: 1500 },
-  { id: 161, year: 2002, org: "Huron Community Foundation", amount: 1500 },
-  { id: 162, year: 2002, org: "Port Austin Good Fellows", amount: 1000 },
-  { id: 163, year: 2002, org: "Jaycee's", amount: 600 },
-  { id: 164, year: 2002, org: "PADS First Congregational Church / McHenry County PADS", amount: 500 },
-  { id: 165, year: 2002, org: "St. John's Northwestern Military Academy", amount: 500 },
-  { id: 166, year: 2002, org: "The Wellness Place", amount: 500 },
-  { id: 167, year: 2002, org: "Rockford Rescue Mission", amount: 200 },
-  { id: 168, year: 2002, org: "Home of the Sparrow", amount: 100 },
-  { id: 169, year: 2002, org: "Alzheimer's Association", amount: 50 },
-  { id: 170, year: 2002, org: "Special Olympics", amount: 50 },
-  { id: 171, year: 2001, org: "American Red Cross", amount: 200 },
-  { id: 172, year: 2001, org: "Juvenile Diabetes Research Foundation", amount: 50 },
-  { id: 173, year: 2001, org: "PADS First Congregational Church / McHenry County PADS", amount: 50 },
-  { id: 174, year: 2001, org: "Home of the Sparrow", amount: 50 },
-  { id: 175, year: 2001, org: "Rockford Rescue Mission", amount: 27 },
-].map(g => ({ ...g, category: ORG_CATEGORIES[g.org] || "Community & Social Services" }));
-
-const DONATIONS_RECEIVED = [
-  { id: 1, year: 2000, donor: "Chris & Dave Smith", amount: 149224 },
-  { id: 2, year: 2001, donor: "Chris & Dave Smith", amount: 15966 },
-  { id: 3, year: 2001, donor: "Kendra C. Smith", amount: 5000 },
-  { id: 4, year: 2001, donor: "David P. Smith III", amount: 5000 },
-  { id: 5, year: 2001, donor: "Carla S. Dobbeck", amount: 5000 },
-  { id: 6, year: 2002, donor: "Chris & Dave Smith", amount: 1000 },
-  { id: 7, year: 2004, donor: "Chris & Dave Smith", amount: 82247 },
-  { id: 8, year: 2005, donor: "Chris & Dave Smith", amount: 123629 },
-  { id: 9, year: 2006, donor: "Chris & Dave Smith", amount: 160411 },
-  { id: 10, year: 2007, donor: "Chris & Dave Smith", amount: 50000 },
-  { id: 11, year: 2008, donor: "Chris & Dave Smith", amount: 50000 },
-  { id: 12, year: 2009, donor: "Chris & Dave Smith", amount: 315000 },
-  { id: 13, year: 2010, donor: "Chris & Dave Smith", amount: 125000 },
-  { id: 14, year: 2011, donor: "Chris & Dave Smith", amount: 50000 },
-  { id: 15, year: 2012, donor: "Chris & Dave Smith", amount: 101662 },
-  { id: 16, year: 2015, donor: "Chris & Dave Smith", amount: 125920 },
-  { id: 17, year: 2018, donor: "Chris & Dave Smith", amount: 291776 },
-  { id: 18, year: 2019, donor: "Chris & Dave Smith", amount: 393497 },
-  { id: 19, year: 2021, donor: "Chris & Dave Smith", amount: 225000 },
-  { id: 20, year: 2022, donor: "Chris & Dave Smith", amount: 300000 },
-  { id: 21, year: 2023, donor: "Chris & Dave Smith", amount: 69804 },
-  { id: 22, year: 2024, donor: "Chris & Dave Smith", amount: 400000 },
-  { id: 23, year: 2025, donor: "Chris & Dave Smith", amount: 323247 },
-];
-
-// =============================================================================
-//  INVESTMENT DATA  (from 2024 Form 990-PF / Aug 2025 statements)
-//  --- These are the only figures that need a manual refresh each year.
-//      Update the four numbers below and the dashboard recalculates. ---
-// =============================================================================
-
-const FALLBACK_INVESTMENTS = {
-  asOf: "June 14, 2026",
-  source: "Addepar portfolio",
-  accounts: 4,
-  composition: [
-    { name: "Equities",     value: 5204689 },
-    { name: "Fixed Income", value: 236764 },
-    { name: "Cash",         value: 57195 },
-  ],
-  dividendsInterest: 0,
-};
-
-// =============================================================================
-//  FALLBACK GRANTEE NOTES  (optional context shown on a grantee's detail page)
-// =============================================================================
-
-const FALLBACK_GRANTEE_NOTES = {
-  "CASA of McHenry County": {
-    contact: "Becky Morris, Executive Director",
-    website: "https://www.casamchenrycounty.org",
-    note: "Kendacar's 2026 commitment represents a meaningful share of CASA's annual operating budget. Becky Morris is providing progress benchmarks tied to the grant.",
-  },
-};
-
-// The bundle the app starts with (instantly visible), replaced by live Supabase
-// data once it loads.
-const FALLBACK_DATA = {
-  grants: GRANTS,
-  donations: DONATIONS_RECEIVED,
-  investments: FALLBACK_INVESTMENTS,
-  granteeNotes: FALLBACK_GRANTEE_NOTES,
+const EMPTY_DATA = {
+  grants: [],
+  donations: [],
+  contributionGifts: [],
+  investments: { asOf: "", source: "", dividendsInterest: 0, accounts: 0, composition: [] },
+  granteeNotes: {},
   granteeUpdates: {},
   granteePrograms: {},
 };
 
-const DataContext = createContext(FALLBACK_DATA);
+const DataContext = createContext(EMPTY_DATA);
 const useData = () => useContext(DataContext);
 
 // =============================================================================
@@ -940,50 +622,157 @@ function DonationEditRow({ row, onDone }) {
 }
 
 // Footer sign-in / sign-out control.
-function SignInControl({ startOpen }) {
-  const { signedIn, email, signOut, startSignIn } = useAuth();
-  // On the dedicated sign-in page the email box shows straight away; in the footer it stays tucked behind a link.
-  const [open, setOpen] = useState(!!startOpen);
+// Two-step sign-in: email, then the 6-digit code from that email (or its link). The code path
+// matters for work inboxes, whose security scanners can open a link before its owner does.
+function SignInPanel() {
+  const { startSignIn, verifyCode } = useAuth();
+  const [step, setStep] = useState("email"); // email | code
   const [addr, setAddr] = useState("");
-  const [state, setState] = useState("idle"); // idle | sending | sent | error
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
 
-  async function submit() {
-    if (!addr.trim()) return;
-    setState("sending"); setMsg("");
-    try { await startSignIn(addr.trim()); setState("sent"); }
-    catch (e) { setState("error"); setMsg(e.message); }
+  async function send(e) {
+    if (e) e.preventDefault();
+    if (!addr.trim()) { setMsg("Enter your email address."); return; }
+    setBusy(true); setMsg("");
+    try { await startSignIn(addr.trim().toLowerCase()); setStep("code"); }
+    catch (err) { setMsg(err.message); }
+    finally { setBusy(false); }
+  }
+  async function verify(e) {
+    if (e) e.preventDefault();
+    const digits = code.replace(/\D/g, "");
+    if (digits.length < 6) { setMsg("Enter the 6-digit code from the email."); return; }
+    setBusy(true); setMsg("");
+    try { await verifyCode(addr.trim().toLowerCase(), digits); }
+    catch (err) { setMsg(err.message); setBusy(false); }
   }
 
-  if (signedIn) {
+  const field = { ...formInput, fontSize: 15 };
+  const primary = { width: "100%", background: TEAL, color: "#fff", border: "none", borderRadius: 12, padding: "13px 22px",
+    fontSize: 15, fontWeight: 700, fontFamily: FONT_BODY, cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 };
+  const quiet = { background: "none", border: "none", padding: 0, color: TEAL, cursor: "pointer", fontWeight: 700, fontSize: 12.5, fontFamily: FONT_BODY };
+
+  if (step === "email") {
     return (
-      <div style={{ fontSize: 12, color: "#7C8C8A", marginTop: 10 }}>
-        Signed in as {email} ·{" "}
-        <button onClick={signOut} style={{ background: "none", border: "none", color: TEAL, cursor: "pointer", fontSize: 12, fontWeight: 600, textDecoration: "underline" }}>Sign out</button>
-      </div>
-    );
-  }
-  if (!open) {
-    return (
-      <div style={{ marginTop: 10 }}>
-        <button onClick={() => setOpen(true)} style={{ background: "none", border: "none", color: "#B2A793", cursor: "pointer", fontSize: 11, letterSpacing: "0.06em" }}>Sign in to edit</button>
-      </div>
+      <form onSubmit={send}>
+        <FormField label="Email">
+          <input type="email" autoComplete="email" value={addr} onChange={e => setAddr(e.target.value)} placeholder="you@example.com" style={field} />
+        </FormField>
+        {msg && <div style={{ color: "#B5451B", fontSize: 13, marginBottom: 12, fontFamily: FONT_BODY }}>{msg}</div>}
+        <button type="submit" disabled={busy} style={primary}>{busy ? "Sending\u2026" : "Email me a sign-in code"}</button>
+      </form>
     );
   }
   return (
-    <div style={{ marginTop: 12, display: "inline-flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
-      {state === "sent" ? (
-        <div style={{ fontSize: 13, color: TEAL }}>Check your email for a sign-in link, then come back to this page.</div>
-      ) : (
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
-          <input value={addr} onChange={e => setAddr(e.target.value)} placeholder="your email"
-            onKeyDown={e => e.key === "Enter" && submit()}
-            style={{ ...inputStyle, width: 220, fontSize: 13 }} />
-          <MiniButton kind="save" onClick={submit} disabled={state === "sending"}>{state === "sending" ? "Sending…" : "Send link"}</MiniButton>
-          <MiniButton kind="cancel" onClick={() => setOpen(false)}>Cancel</MiniButton>
+    <form onSubmit={verify}>
+      <p style={{ fontSize: 14, color: "#5E6E6C", fontFamily: FONT_BODY, lineHeight: 1.55, marginBottom: 14 }}>
+        We sent a code to <strong style={{ color: INK }}>{addr}</strong>. Type it below, or click the link in that email.
+      </p>
+      <FormField label="6-digit code">
+        <input autoFocus inputMode="numeric" autoComplete="one-time-code" maxLength={10} value={code}
+          onChange={e => setCode(e.target.value)} placeholder="123456"
+          style={{ ...field, fontSize: 22, letterSpacing: "0.3em", textAlign: "center" }} />
+      </FormField>
+      {msg && <div style={{ color: "#B5451B", fontSize: 13, marginBottom: 12, fontFamily: FONT_BODY }}>{msg}</div>}
+      <button type="submit" disabled={busy} style={primary}>{busy ? "Checking\u2026" : "Sign in"}</button>
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 14 }}>
+        <button type="button" style={quiet} onClick={() => { setStep("email"); setCode(""); setMsg(""); }}>Use a different email</button>
+        <button type="button" style={quiet} onClick={send} disabled={busy}>Send a new code</button>
+      </div>
+    </form>
+  );
+}
+
+// =============================================================================
+//  WELCOME  (the only page anyone can see without signing in)
+// =============================================================================
+
+// Inquiries go to Netlify Forms, which filters spam and emails the foundation, so the
+// database never accepts anything from someone who isn't signed in.
+function InquiryForm() {
+  const [f, setF] = useState({ name: "", email: "", organization: "", message: "", company_website: "" });
+  const [state, setState] = useState("idle"); // idle | sending | sent | missing | error
+  const set = (k, v) => setF({ ...f, [k]: v });
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!f.name.trim() || !f.email.trim() || !f.message.trim()) { setState("missing"); return; }
+    setState("sending");
+    try {
+      const body = new URLSearchParams({ "form-name": "inquiry", ...f }).toString();
+      const res = await fetch("/", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body });
+      if (!res.ok) throw new Error(String(res.status));
+      setState("sent");
+    } catch { setState("error"); }
+  }
+
+  if (state === "sent") {
+    return <div style={{ fontFamily: FONT_BODY, fontSize: 15, color: TEAL, lineHeight: 1.6, padding: "8px 0" }}>Thank you. Your note has been sent, and we'll be in touch.</div>;
+  }
+  return (
+    <form name="inquiry" onSubmit={submit} style={{ position: "relative" }}>
+      {/* Honeypot: people never see or fill this; bots do, and Netlify discards those submissions. */}
+      <p aria-hidden="true" style={{ position: "absolute", left: "-10000px", width: 1, height: 1, overflow: "hidden" }}>
+        <label>Leave this empty <input name="company_website" tabIndex={-1} autoComplete="off" value={f.company_website} onChange={e => set("company_website", e.target.value)} /></label>
+      </p>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <FormField label="Your name"><input value={f.name} onChange={e => set("name", e.target.value)} style={formInput} /></FormField>
+        <FormField label="Email"><input type="email" value={f.email} onChange={e => set("email", e.target.value)} style={formInput} /></FormField>
+      </div>
+      <FormField label="Organization" hint="Optional"><input value={f.organization} onChange={e => set("organization", e.target.value)} style={formInput} /></FormField>
+      <FormField label="Message"><textarea rows={4} value={f.message} onChange={e => set("message", e.target.value)} style={{ ...formInput, resize: "vertical" }} /></FormField>
+      {state === "missing" && <div style={{ color: "#B5451B", fontSize: 13, marginBottom: 12, fontFamily: FONT_BODY }}>Please add your name, email and a message.</div>}
+      {state === "error" && <div style={{ color: "#B5451B", fontSize: 13, marginBottom: 12, fontFamily: FONT_BODY }}>We couldn't send that just now. Please write to us at the address above.</div>}
+      <button type="submit" disabled={state === "sending"} style={{ background: CORAL, color: "#fff", border: "none", borderRadius: 12, padding: "12px 24px", fontSize: 15, fontWeight: 700, fontFamily: FONT_BODY, cursor: "pointer", opacity: state === "sending" ? 0.6 : 1 }}>
+        {state === "sending" ? "Sending\u2026" : "Send"}
+      </button>
+    </form>
+  );
+}
+
+function WelcomePage({ narrow }) {
+  const card = { background: "#fff", border: "1.5px solid " + LINE, borderRadius: 24, padding: narrow ? "26px 22px" : "34px 38px" };
+  const eyebrow = { fontFamily: FONT_BODY, fontWeight: 800, fontSize: 11, letterSpacing: "0.12em", textTransform: "uppercase", color: "#7C8C8A", marginBottom: 8 };
+  return (
+    <div style={{ minHeight: "100vh", background: "#FFF8F2", fontFamily: FONT_BODY, color: INK }}>
+      <div style={{ background: "linear-gradient(135deg, #0B6E6E 0%, #0A5C5C 100%)", color: "#fff", padding: narrow ? "40px 20px 56px" : "64px 40px 80px" }}>
+        <div style={{ maxWidth: 1040, margin: "0 auto" }}>
+          <Wordmark size={narrow ? 26 : 32} light sub={false} />
+          <h1 style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: narrow ? 30 : 42, lineHeight: 1.15, margin: "26px 0 10px", maxWidth: 680 }}>A family foundation, giving since 2001.</h1>
+          <p style={{ fontSize: narrow ? 15 : 17, color: "#CFEFE5", lineHeight: 1.6, maxWidth: 620 }}>The Kendacar Foundation supports community organizations serving children, families and the places we call home.</p>
         </div>
-      )}
-      {state === "error" && <div style={{ color: "#B5451B", fontSize: 12 }}>{msg}</div>}
+      </div>
+      <div style={{ maxWidth: 1040, margin: narrow ? "-28px auto 0" : "-44px auto 0", padding: narrow ? "0 16px 48px" : "0 40px 72px", display: "grid", gridTemplateColumns: narrow ? "1fr" : "minmax(0,1.35fr) minmax(0,1fr)", gap: 22, alignItems: "start" }}>
+        <div style={card}>
+          <div style={eyebrow}>Contact the foundation</div>
+          <div style={{ fontSize: 15, lineHeight: 1.6, marginBottom: 22 }}>
+            <strong>Kendacar Foundation, Inc.</strong><br />627 Leonard Pkwy.<br />Crystal Lake, IL 60014
+          </div>
+          <InquiryForm />
+        </div>
+        <div style={card}>
+          <div style={eyebrow}>Family &amp; advisors</div>
+          <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 22, marginBottom: 6 }}>Sign in</div>
+          <p style={{ fontSize: 14, color: "#6F7E7C", lineHeight: 1.55, marginBottom: 18 }}>Enter your email and we'll send a sign-in code.</p>
+          <SignInPanel />
+        </div>
+      </div>
+      <div style={{ padding: "0 20px 36px", textAlign: "center", fontSize: 11, color: "#9B8E80", fontFamily: FONT_DISPLAY, letterSpacing: "0.08em" }}>KENDACAR FOUNDATION</div>
+    </div>
+  );
+}
+
+function NoticeScreen({ title, body, children }) {
+  return (
+    <div style={{ minHeight: "100vh", background: "#FFF8F2", display: "grid", placeItems: "center", padding: 24, fontFamily: FONT_BODY }}>
+      <div style={{ maxWidth: 460, textAlign: "center", background: "#fff", border: "1.5px solid " + LINE, borderRadius: 24, padding: "34px 30px" }}>
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 14 }}><HopMark size={46} /></div>
+        <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 22, color: INK, marginBottom: 8 }}>{title}</div>
+        {body && <div style={{ fontSize: 14.5, color: "#6F7E7C", lineHeight: 1.6 }}>{body}</div>}
+        {children && <div style={{ marginTop: 18, display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>{children}</div>}
+      </div>
     </div>
   );
 }
@@ -1031,14 +820,6 @@ function NavBar({ view, setView, narrow, signedIn, pending }) {
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
             Drive
           </a>
-          {/* Signed-out trustees need a visible way in — the only other sign-in is 11px text in the footer. */}
-          {!signedIn && (
-            <button onClick={() => setView("queue")} style={{
-              background: "rgba(255,255,255,0.14)", border: "1px solid rgba(255,255,255,0.35)", color: "#fff",
-              fontFamily: "'Nunito Sans', sans-serif", fontWeight: 600, fontSize: 13,
-              padding: narrow ? "8px 12px" : "8px 16px", borderRadius: 6, cursor: "pointer", marginLeft: narrow ? 2 : 6,
-            }}>Sign in</button>
-          )}
         </div>
       </div>
     </div>
@@ -1061,6 +842,7 @@ function FlowNode({ label, value, sub, big }) {
 
 function PulseLanding({ setView, goGrantee, narrow }) {
   const { grants, donations, investments } = useData();
+  const { signedIn } = useAuth();
   const cycleYear = currentCycleYear(grants);
   const totalGranted = sumAmount(grants);
   const totalReceived = sumAmount(donations);
@@ -1122,7 +904,7 @@ function PulseLanding({ setView, goGrantee, narrow }) {
         </div>
 
         {/* CTAs */}
-        <Card style={{ padding: narrow ? "22px" : "26px 30px", marginBottom: 40, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 16, background: "#FBF4EC" }}>
+        {signedIn && (<Card style={{ padding: narrow ? "22px" : "26px 30px", marginBottom: 40, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 16, background: "#FBF4EC" }}>
           <div>
             <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 22, color: INK }}>Take part</div>
             <div style={{ fontSize: 14, color: "#7C8C8A", marginTop: 4, fontFamily: FONT_BODY }}>Recommend a grant, or record a contribution to the fund.</div>
@@ -1131,7 +913,7 @@ function PulseLanding({ setView, goGrantee, narrow }) {
             <button onClick={() => setView("request-grant")} style={{ background: CORAL, color: "#fff", border: "none", borderRadius: 12, padding: "12px 22px", fontSize: 14.5, fontWeight: 700, fontFamily: FONT_BODY, cursor: "pointer" }}>Recommend a Grant</button>
             <button onClick={() => setView("contribute")} style={{ background: "#fff", color: TEAL, border: "1.5px solid " + TEAL, borderRadius: 12, padding: "12px 22px", fontSize: 14.5, fontWeight: 700, fontFamily: FONT_BODY, cursor: "pointer" }}>Make a Contribution</button>
           </div>
-        </Card>
+        </Card>)}
 
         {/* Explore cards */}
         <SectionTitle title="Explore" sub="Dive into any part of the foundation" />
@@ -1148,11 +930,6 @@ function PulseLanding({ setView, goGrantee, narrow }) {
           ))}
         </div>
 
-        <div style={{ marginTop: 36, textAlign: "center" }}>
-          <a href="./kendacar_scenarios.html" target="_blank" rel="noopener noreferrer" style={{ color: TEAL, fontSize: 13, fontWeight: 600, textDecoration: "none", fontFamily: "'Nunito Sans', sans-serif" }}>
-            View 40-year giving scenarios &rarr;
-          </a>
-        </div>
       </div>
     </div>
   );
@@ -1506,7 +1283,7 @@ function AccountsDrilldown({ narrow }) {
 
 function InvestmentsView({ narrow }) {
   const { investments } = useData();
-  const { signedIn } = useAuth();
+  const { signedIn, member } = useAuth();
   const [editing, setEditing] = useState(false);
   const [showAccts, setShowAccts] = useState(false);
   const data = investments.composition;
@@ -1525,7 +1302,7 @@ function InvestmentsView({ narrow }) {
 
       <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "repeat(3, 1fr)", gap: 16, marginBottom: 24 }}>
         <StatCard label="Total Corpus" value={fmtK(corpus)} sub={"as of " + investments.asOf} accent={TEAL} />
-        {signedIn ? (
+        {member ? (
           <button onClick={() => setShowAccts(s => !s)} style={{ textAlign: "left", cursor: "pointer", background: showAccts ? "#FFF3EC" : "#fff", border: "1px solid " + (showAccts ? CORAL : "#EFE7DD"), borderTop: "3px solid " + CORAL, borderRadius: 18, padding: "20px 24px" }}>
             <div style={{ fontSize: 11, fontFamily: FONT_BODY, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color: "#7C8C8A", marginBottom: 6 }}>Accounts</div>
             <div style={{ fontSize: 30, fontWeight: 600, color: "#1F3A38", fontFamily: FONT_DISPLAY, lineHeight: 1 }}>{investments.accounts || "—"}</div>
@@ -1537,7 +1314,7 @@ function InvestmentsView({ narrow }) {
         <StatCard label="Asset Classes" value={data.length} sub="equities, fixed income, cash" accent={SUN} />
       </div>
 
-      {signedIn && showAccts && <AccountsDrilldown narrow={narrow} />}
+      {member && showAccts && <AccountsDrilldown narrow={narrow} />}
 
       <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "minmax(0,1fr) minmax(0,1fr)", gap: 20 }}>
         <Card style={{ padding: 24 }}>
@@ -1587,7 +1364,7 @@ function InvestmentsView({ narrow }) {
 
 function GrantsView({ narrow }) {
   const { grants } = useData();
-  const { signedIn, session, setSession, email } = useAuth();
+  const { signedIn, member, session, setSession, email } = useAuth();
   const [docs, setDocs] = useState({});   // grant_id -> uploaded documents
   const [yearFilter, setYearFilter] = useState("All Years");
   const [orgFilter,  setOrgFilter]  = useState("All Organizations");
@@ -1624,18 +1401,18 @@ function GrantsView({ narrow }) {
 
   const [folders, setFolders] = useState({});
   const loadFolders = async () => {
-    if (!signedIn) { setFolders({}); return; }
+    if (!member) { setFolders({}); return; }
     try {
       const rows = await authedGet(session, setSession, "tax_year_folders?select=year,url");
       const m = {}; rows.forEach(r => { m[r.year] = r.url; });
       setFolders(m);
     } catch { /* link simply won't show */ }
   };
-  useEffect(() => { loadFolders(); /* eslint-disable-next-line */ }, [signedIn]);
+  useEffect(() => { loadFolders(); /* eslint-disable-next-line */ }, [member]);
 
   // One query for every grant's paperwork, indexed by grant so each row is cheap.
   const loadDocs = async () => {
-    if (!signedIn) { setDocs({}); return; }
+    if (!member) { setDocs({}); return; }
     try {
       const rows = await authedGet(session, setSession,
         "grant_documents?select=id,grant_id,kind,storage_path,filename,uploaded_at&order=uploaded_at.desc");
@@ -1644,7 +1421,7 @@ function GrantsView({ narrow }) {
       setDocs(m);
     } catch { /* leave the buttons in their empty state */ }
   };
-  useEffect(() => { loadDocs(); /* eslint-disable-next-line */ }, [signedIn]);
+  useEffect(() => { loadDocs(); /* eslint-disable-next-line */ }, [member]);
 
   // Default the signature to whoever is signed in, so letters go out in their own name.
   useEffect(() => {
@@ -1707,9 +1484,9 @@ function GrantsView({ narrow }) {
           <button onClick={() => { setYearFilter("All Years"); setOrgFilter("All Organizations"); setCatFilter("All Categories"); }}
             style={{ background: "none", border: "1px solid #E2D7C9", borderRadius: 6, padding: "7px 14px", fontSize: 12, color: "#7C8C8A", cursor: "pointer", fontFamily: "'Nunito Sans', sans-serif" }}>Clear</button>
         )}
-        {signedIn && yearFilter !== "All Years" && (
+        {member && yearFilter !== "All Years" && (
           <div style={{ marginLeft: "auto", alignSelf: "center" }}>
-            <TaxFolderLink year={Number(yearFilter)} url={folders[yearFilter]} onChange={loadFolders} />
+            <TaxFolderLink year={Number(yearFilter)} url={folders[yearFilter]} onChange={loadFolders} readOnly={!signedIn} />
           </div>
         )}
       </Card>
@@ -1752,12 +1529,12 @@ function GrantsView({ narrow }) {
             </div>
           )}
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: signedIn ? 1180 : 620 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: member ? 1180 : 620 }}>
               <thead>
                 <tr style={{ background: "#FFF8F2", borderBottom: "1px solid #EFE7DD" }}>
                   {[["year", "Year"], ["org", "Organization"], ["category", "Category"], ["amount", "Amount"], ["date", "Check Date"], ["check", "Check #"]]
-                    .concat(signedIn ? [["", "Tax folder"], ["", "Actions"]] : []).map(([key, label]) => (
-                    <th key={label} style={{ padding: label === "Actions" ? "12px 28px 12px 16px" : "12px 16px", textAlign: "left", fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#7C8C8A", whiteSpace: "nowrap" }}>
+                    .concat(member ? [["", "Tax folder"], ["", signedIn ? "Actions" : "Receipt"]] : []).map(([key, label]) => (
+                    <th key={label} style={{ padding: label === "Actions" || label === "Receipt" ? "12px 28px 12px 16px" : "12px 16px", textAlign: "left", fontFamily: "'Fredoka', serif", fontWeight: 600, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#7C8C8A", whiteSpace: "nowrap" }}>
                       {key ? (
                         <button onClick={() => toggleSort(key)} title={"Sort by " + label} style={{
                           background: "none", border: "none", padding: 0, cursor: "pointer",
@@ -1775,7 +1552,7 @@ function GrantsView({ narrow }) {
               </thead>
               <tbody>
                 {signedIn && editId === "new" && <GrantEditRow row={null} onDone={() => setEditId(null)} narrow={narrow} />}
-                {filtered.length === 0 && <tr><td colSpan={signedIn ? 8 : 6} style={{ padding: 32, textAlign: "center", color: "#7C8C8A" }}>No grants match your filters.</td></tr>}
+                {filtered.length === 0 && <tr><td colSpan={member ? 8 : 6} style={{ padding: 32, textAlign: "center", color: "#7C8C8A" }}>No grants match your filters.</td></tr>}
                 {filtered.slice().sort(compareGrants).map((g, i) => (
                   editId === g.id && g.id != null ? (
                     <GrantEditRow key={"edit" + g.id} row={g} onDone={() => setEditId(null)} narrow={narrow} />
@@ -1789,7 +1566,7 @@ function GrantsView({ narrow }) {
                     <td style={{ padding: "11px 16px", fontWeight: 700, color: TEAL, whiteSpace: "nowrap" }}>{fmt(g.amount)}</td>
                     <td style={{ padding: "11px 16px", color: "#7C8C8A", whiteSpace: "nowrap" }}>{g.checkDate ? fmtCheckDate(g.checkDate) : <span style={{ color: "#C8BBA8" }}>—</span>}</td>
                     <td style={{ padding: "11px 16px", color: "#7C8C8A", whiteSpace: "nowrap" }}>{g.checkNumber ? "#" + g.checkNumber : <span style={{ color: "#C8BBA8" }}>—</span>}</td>
-                    {signedIn && (
+                    {member && (
                       <td style={{ padding: "11px 16px", whiteSpace: "nowrap" }}>
                         {folders[g.year]
                           ? <a href={folders[g.year]} target="_blank" rel="noopener noreferrer"
@@ -1798,13 +1575,13 @@ function GrantsView({ narrow }) {
                           : <span style={{ color: "#C8BBA8", fontSize: 11.5 }}>—</span>}
                       </td>
                     )}
-                    {signedIn && (
+                    {member && (
                       <td style={{ padding: "12px 28px 12px 16px", whiteSpace: "nowrap" }}>
                         {g.id != null
                           ? <div style={{ display: "flex", gap: 8, flexWrap: "nowrap", alignItems: "center" }}>
-                              <MiniButton kind="edit" onClick={() => setEditId(g.id)}>Edit</MiniButton>
-                              <GrantLetterButton grant={g} signer={SIGNERS[signerIdx]} />
-                              <GrantReceiptButton grant={g} docs={docs[g.id]} onChange={loadDocs} />
+                              {signedIn && <MiniButton kind="edit" onClick={() => setEditId(g.id)}>Edit</MiniButton>}
+                              {signedIn && <GrantLetterButton grant={g} signer={SIGNERS[signerIdx]} />}
+                              <GrantReceiptButton grant={g} docs={docs[g.id]} onChange={loadDocs} readOnly={!signedIn} />
                             </div>
                           : <span style={{ fontSize: 11, color: "#C8BBA8" }}>—</span>}
                       </td>
@@ -1896,7 +1673,7 @@ function GrantsView({ narrow }) {
 
 function ContributionsView({ narrow }) {
   const { donations, contributionGifts, refresh } = useData();
-  const { signedIn, email, session, setSession } = useAuth();
+  const { signedIn, member, email, session, setSession } = useAuth();
   const [signerIdx, setSignerIdx] = useState(0);   // who signs the receipts
   const [editId, setEditId] = useState(null);
   const [openYear, setOpenYear] = useState(null);
@@ -1904,19 +1681,19 @@ function ContributionsView({ narrow }) {
 
   const [folders, setFolders] = useState({});
   const loadFolders = async () => {
-    if (!signedIn) { setFolders({}); return; }
+    if (!member) { setFolders({}); return; }
     try {
       const rows = await authedGet(session, setSession, "tax_year_folders?select=year,url");
       const m = {}; rows.forEach(r => { m[r.year] = r.url; });
       setFolders(m);
     } catch { /* link simply won't show */ }
   };
-  useEffect(() => { loadFolders(); /* eslint-disable-next-line */ }, [signedIn]);
+  useEffect(() => { loadFolders(); /* eslint-disable-next-line */ }, [member]);
 
   // Documents filed against each gift, indexed by gift.
   const [giftDocs, setGiftDocs] = useState({});
   const loadGiftDocs = async () => {
-    if (!signedIn) { setGiftDocs({}); return; }
+    if (!member) { setGiftDocs({}); return; }
     try {
       const rows = await authedGet(session, setSession,
         "gift_documents?select=id,gift_id,storage_path,filename,uploaded_at&order=uploaded_at.desc");
@@ -1925,7 +1702,7 @@ function ContributionsView({ narrow }) {
       setGiftDocs(m);
     } catch { /* buttons fall back to their empty state */ }
   };
-  useEffect(() => { loadGiftDocs(); /* eslint-disable-next-line */ }, [signedIn]);
+  useEffect(() => { loadGiftDocs(); /* eslint-disable-next-line */ }, [member]);
 
   // Receipts go out over the signer's name — default to whoever is signed in.
   useEffect(() => {
@@ -2018,9 +1795,9 @@ function ContributionsView({ narrow }) {
                   <tr style={{ borderBottom: "1px solid #F3ECE3", background: i % 2 === 0 ? "#fff" : "#FCF7F1" }}>
                     <td style={{ padding: "10px 16px", color: "#7C8C8A" }}>
                       <div>{d.year}</div>
-                      {signedIn && (folders[d.year] || openYear === d.year) && (
+                      {member && (folders[d.year] || (signedIn && openYear === d.year)) && (
                         <div style={{ marginTop: 3 }}>
-                          <TaxFolderLink year={d.year} url={folders[d.year]} onChange={loadFolders} compact />
+                          <TaxFolderLink year={d.year} url={folders[d.year]} onChange={loadFolders} compact readOnly={!signedIn} />
                         </div>
                       )}
                     </td>
@@ -2067,7 +1844,7 @@ function ContributionsView({ narrow }) {
                                 ? <span style={{ color: "#1F9E6E", fontWeight: 700 }}>receipted {fmtCheckDate(g.receiptDate)}</span>
                                 : <span style={{ color: CORAL, fontWeight: 700 }}>no receipt yet</span>}
                               {signedIn && <GiftReceiptButton gift={g} signer={SIGNERS[signerIdx]} onDone={async () => { await refresh(); await loadGiftDocs(); }} />}
-                              {signedIn && <GiftDocButton gift={g} docs={giftDocs[g.id]} onChange={loadGiftDocs} />}
+                              {member && <GiftDocButton gift={g} docs={giftDocs[g.id]} onChange={loadGiftDocs} readOnly={!signedIn} />}
                             </span>
                           </td>
                         </tr>
@@ -2690,7 +2467,7 @@ async function generateGrantLetter({ grant, note, signer }) {
 }
 
 // Upload or open the acknowledgment a grantee mails back for a grant.
-function GrantReceiptButton({ grant, docs, onChange }) {
+function GrantReceiptButton({ grant, docs, onChange, readOnly }) {
   const { session, setSession } = useAuth();
   const [busy, setBusy] = useState(false);
   const fileRef = useRef(null);
@@ -2737,6 +2514,11 @@ function GrantReceiptButton({ grant, docs, onChange }) {
     finally { setBusy(false); }
   }
 
+  if (readOnly) {
+    return doc
+      ? <MiniButton kind="save" onClick={open} disabled={busy} title="Open the acknowledgment this organization sent back">{busy ? "\u2026" : "\u2713 Receipt from org"}</MiniButton>
+      : <span style={{ fontSize: 11.5, color: "#C8BBA8" }}>not yet received</span>;
+  }
   return (
     <>
       <input ref={fileRef} type="file" onChange={pick} style={{ display: "none" }}
@@ -2764,7 +2546,7 @@ const subAction = danger => ({
 });
 
 // Upload or open the receipt filed against a gift.
-function GiftDocButton({ gift, docs, onChange }) {
+function GiftDocButton({ gift, docs, onChange, readOnly }) {
   const { session, setSession } = useAuth();
   const [busy, setBusy] = useState(false);
   const fileRef = useRef(null);
@@ -2796,6 +2578,9 @@ function GiftDocButton({ gift, docs, onChange }) {
     try { window.open(await signedDocUrl(session, setSession, doc.storage_path), "_blank", "noopener"); }
     catch (err) { alert(err.message); }
     finally { setBusy(false); }
+  }
+  if (readOnly) {
+    return doc ? <MiniButton kind="save" onClick={open} disabled={busy}>{busy ? "\u2026" : "\u2713 On file"}</MiniButton> : null;
   }
   return (
     <>
@@ -2909,7 +2694,7 @@ function GiftReceiptButton({ gift, signer, onDone }) {
 }
 
 // Link straight to a tax year's Drive folder, so a preparer isn't hunting for paperwork.
-function TaxFolderLink({ year, url, onChange, compact }) {
+function TaxFolderLink({ year, url, onChange, compact, readOnly }) {
   const { session, setSession } = useAuth();
   const [busy, setBusy] = useState(false);
   async function edit() {
@@ -2934,10 +2719,10 @@ function TaxFolderLink({ year, url, onChange, compact }) {
           {year} tax folder &rarr;
         </a>
       )}
-      <button onClick={edit} disabled={busy} style={{
+      {!readOnly && <button onClick={edit} disabled={busy} style={{
         background: "none", border: "none", padding: 0, cursor: busy ? "default" : "pointer",
         color: "#9B8E80", fontSize: compact ? 11 : 11.5, fontFamily: FONT_BODY, textDecoration: "underline",
-      }}>{busy ? "\u2026" : (url ? "edit" : "+ add " + year + " folder link")}</button>
+      }}>{busy ? "\u2026" : (url ? "edit" : "+ add " + year + " folder link")}</button>}
     </span>
   );
 }
@@ -3286,6 +3071,7 @@ function FormShell({ title, accent, lead, narrow, setView, children, done, doneM
 
 function RequestGrantForm({ narrow, setView }) {
   const { grants } = useData();
+  const { session, setSession } = useAuth();
   const orgNames = useMemo(() => Array.from(new Set(grants.map(g => normalizeOrg(g.org)))).sort(), [grants]);
   const [org, setOrg] = useState("");
   const [requestedBy, setRequestedBy] = useState("");
@@ -3302,7 +3088,7 @@ function RequestGrantForm({ narrow, setView }) {
     if (!org.trim() || !requestedBy.trim()) { setErr("Please add the organization and your name."); return; }
     setBusy(true); setErr("");
     try {
-      await publicInsert("grant_requests", {
+      await authedWrite(session, setSession, "POST", "grant_requests", {
         org: org.trim(), requested_by: requestedBy.trim(),
         requester_email: email.trim() || null,
         amount: amount === "" ? null : Number(amount),
@@ -3390,7 +3176,7 @@ function ContributionForm({ narrow, setView }) {
         await refresh();
       } else {
         // Anyone else lands in the inbox, which emails a trustee to record it.
-        await publicInsert("contributions", {
+        await authedWrite(session, setSession, "POST", "contributions", {
           donor: donor.trim(), amount: finalAmount,
           note: [note.trim(), "Gift date: " + giftDate, isSec ? "Securities: " + secRows.map(r => r.quantity + " " + r.symbol).join(", ") : "Cash"].filter(Boolean).join("\n"),
         });
@@ -3478,7 +3264,7 @@ function MarkSentRow({ req, onDone }) {
     try {
       // 1) create the grant (carrying the check details)
       await authedWrite(session, setSession, "POST", "grants",
-        { year: yr, org: req.org, amount: Number(amount), category: req.category || ORG_CATEGORIES[req.org] || "Community & Social Services",
+        { year: yr, org: req.org, amount: Number(amount), category: req.category || "Community & Social Services",
           check_number: checkNo.trim() || null, check_date: date || null });
       // 2) mark the recommendation as sent
       await authedWrite(session, setSession, "PATCH", "grant_requests?id=eq." + req.id,
@@ -3628,49 +3414,68 @@ function ProcessingQueue({ narrow, setView, onChange }) {
 export default function App() {
   const [view, setView] = useState("pulse");
   const [selectedOrg, setSelectedOrg] = useState(null);
-  const [data, setData] = useState(FALLBACK_DATA);  // instant render from baked-in copy
-  const [source, setSource] = useState("fallback"); // "fallback" | "live"
+  const [data, setData] = useState(EMPTY_DATA);
+  const [loaded, setLoaded] = useState(false);
   const [session, setSession] = useState(null);
+  const [role, setRole] = useState(null);           // null = checking, "admin", "advisor", "none", "error"
+  const [restoring, setRestoring] = useState(true); // true until any saved sign-in has been checked
+  const [attempt, setAttempt] = useState(0);
   const [pending, setPending] = useState(0);        // count of new submissions
   const width = useWindowWidth();
   const narrow = width < 720;
 
-  const refreshPending = async (sess) => {
-    const s = sess || session;
-    if (!s) { setPending(0); return; }
-    try { const rows = await authedGet(s, setSession, "grant_requests?status=eq.new&select=id"); setPending(rows.length); }
+  // Loaders run later from child components, so they read the latest session through a ref.
+  const sessionRef = useRef(null);
+  sessionRef.current = session;
+  const get = path => authedGet(sessionRef.current, setSession, path);
+
+  const refreshPending = async () => {
+    if (!sessionRef.current) { setPending(0); return; }
+    try { const rows = await get("grant_requests?status=eq.new&select=id"); setPending(rows.length); }
     catch { /* ignore */ }
   };
 
-  // Reusable loader so edits can refresh the page data after a write.
   const loadData = async () => {
-    try {
-      const live = await fetchLiveData();
-      if (live && live.grants.length) { setData(live); setSource("live"); }
-      return live;
-    } catch { /* keep fallback */ }
+    if (!sessionRef.current) return null;
+    try { const live = await fetchLiveData(get); setData(live); setLoaded(true); return live; }
+    catch { setLoaded(true); return null; }
   };
 
-  // On load: capture a magic-link session from the URL (or restore a saved one),
-  // then pull live data.
+  // On load: capture a sign-in from the email link, or restore a saved one.
   useEffect(() => {
     const fromHash = sessionFromHash();
-    const existing = fromHash || loadSession();
+    const saved = fromHash || loadSession();
     if (fromHash) saveSession(fromHash);
-    if (existing) {
-      if (existing.expires_at && existing.expires_at < Date.now()) {
-        refreshSession(existing).then(r => { if (r) { setSession(r); saveSession(r); } else { saveSession(null); } });
-      } else setSession(existing);
-    }
-    // Deep-link to a page (shareable links like .../Kendacar/#request-grant or #review)
     const h = window.location.hash.replace("#", "");
     if (h === "request-grant" || h === "contribute") setView(h);
     else if (h === "review" || h === "queue") setView("queue");
-    loadData();
+    if (!saved) { setRestoring(false); return; }
+    if (saved.expires_at && saved.expires_at < Date.now()) {
+      refreshSession(saved).then(r => {
+        if (r) { saveSession(r); setSession(r); } else saveSession(null);
+        setRestoring(false);
+      });
+    } else { setSession(saved); setRestoring(false); }
   }, []);
 
-  // Keep the "new submissions" badge current whenever the signed-in user changes.
-  useEffect(() => { refreshPending(session); /* eslint-disable-next-line */ }, [session]);
+  // When someone signs in, ask the database what they may do, then load what they may see.
+  const who = session ? session.email : "";
+  useEffect(() => {
+    if (!who) { setRole(null); setData(EMPTY_DATA); setLoaded(false); setPending(0); return; }
+    let alive = true;
+    setRole(null);
+    (async () => {
+      try {
+        const [member, admin] = await Promise.all([get("rpc/is_member"), get("rpc/is_admin")]);
+        if (!alive) return;
+        const r = admin === true ? "admin" : member === true ? "advisor" : "none";
+        setRole(r);
+        if (r !== "none") { loadData(); if (r === "admin") refreshPending(); }
+      } catch { if (alive) setRole("error"); }
+    })();
+    return () => { alive = false; };
+    // eslint-disable-next-line
+  }, [who, attempt]);
 
   function nav(v) {
     setView(v); setSelectedOrg(null);
@@ -3679,53 +3484,72 @@ export default function App() {
     window.scrollTo({ top: 0 });
   }
   function goGrantee(org) { setSelectedOrg(org); setView("grantee-detail"); window.scrollTo({ top: 0 }); }
+  const signOut = () => { saveSession(null); setSession(null); setView("pulse"); };
 
   const auth = {
     session, setSession,
-    signedIn: !!session,
+    member: role === "admin" || role === "advisor", // may see everything
+    signedIn: role === "admin",                      // may edit: the flag every edit control checks
+    advisor: role === "advisor",
     email: session?.email || "",
-    startSignIn: email => sendMagicLink(email),
-    signOut: () => { setSession(null); saveSession(null); },
+    startSignIn: requestSignInCode,
+    verifyCode: async (addr, code) => { const s = await verifySignInCode(addr, code); saveSession(s); setSession(s); },
+    signOut,
   };
-
-  return (
+  const shell = inner => (
     <AuthContext.Provider value={auth}>
-      <DataContext.Provider value={{ ...data, refresh: loadData, live: source === "live" }}>
-        <div style={{ minHeight: "100vh", background: "#FFF8F2", fontFamily: "'Nunito Sans', sans-serif", color: "#1F3A38" }}>
-          <NavBar view={view} setView={nav} narrow={narrow} signedIn={auth.signedIn} pending={pending} />
-
-          {auth.signedIn && (
-            <div style={{ background: "#0E7A5F", color: "#fff", textAlign: "center", fontSize: 12, padding: "7px 16px", fontFamily: "'Nunito Sans', sans-serif" }}>
-              Edit mode — signed in as {auth.email}. ·{" "}
-              <button onClick={() => setView("queue")} style={{ background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 12, fontWeight: 700, textDecoration: "underline" }}>Review submissions</button>
-              {pending > 0 && <span style={{ background: CORAL, color: "#fff", borderRadius: 20, padding: "1px 8px", fontSize: 11, fontWeight: 800, marginLeft: 6 }}>{pending}</span>} ·{" "}
-              <button onClick={auth.signOut} style={{ background: "none", border: "none", color: "#CFEFE5", cursor: "pointer", fontSize: 12, fontWeight: 600, textDecoration: "underline" }}>Sign out</button>
-            </div>
-          )}
-
-          {view === "pulse"          && <PulseLanding setView={nav} goGrantee={goGrantee} narrow={narrow} />}
-          {view === "investments"    && <InvestmentsView narrow={narrow} />}
-          {view === "grants"         && <GrantsView narrow={narrow} />}
-          {view === "contributions"  && <ContributionsView narrow={narrow} />}
-          {view === "grantees"       && <GranteesDirectory goGrantee={goGrantee} narrow={narrow} />}
-          {view === "grantee-detail" && <GranteeDetail org={selectedOrg} setView={nav} goGrantee={goGrantee} narrow={narrow} />}
-          {view === "request-grant"  && <RequestGrantForm narrow={narrow} setView={nav} />}
-          {view === "contribute"     && <ContributionForm narrow={narrow} setView={nav} />}
-          {view === "queue"          && (auth.signedIn
-            ? <ProcessingQueue narrow={narrow} setView={nav} onChange={() => refreshPending(session)} />
-            : <div style={{ maxWidth: 560, margin: "0 auto", padding: narrow ? "40px 16px" : "60px 40px", textAlign: "center" }}>
-                <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 24, color: INK, marginBottom: 8 }}>Sign in</div>
-                <div style={{ fontSize: 14, color: "#7C8C8A", fontFamily: FONT_BODY, marginBottom: 18 }}>Grant recommendations and editing are private to the family. Enter your email and we&rsquo;ll send you a sign-in link.</div>
-                <SignInControl startOpen />
-              </div>)}
-
-          <div style={{ padding: "32px 20px", textAlign: "center", fontSize: 11, color: "#7C8C8A", fontFamily: "'Fredoka', serif", letterSpacing: "0.08em" }}>
-            KENDACAR FOUNDATION &middot; CONFIDENTIAL &middot; FOR FAMILY USE ONLY
-            {source === "live" && <span style={{ color: "#B7CFCF" }}> &middot; live data</span>}
-            <SignInControl />
-          </div>
-        </div>
-      </DataContext.Provider>
+      <DataContext.Provider value={{ ...data, refresh: loadData, live: loaded }}>{inner}</DataContext.Provider>
     </AuthContext.Provider>
+  );
+  const pill = { background: TEAL, color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontSize: 14, fontWeight: 700, fontFamily: FONT_BODY, cursor: "pointer" };
+  const pillQuiet = { ...pill, background: "#fff", color: TEAL, border: "1.5px solid " + TEAL };
+
+  if (restoring || (session && role === null)) return shell(<NoticeScreen title="Signing you in\u2026" />);
+  if (!session) return shell(<WelcomePage narrow={narrow} />);
+  if (role === "none") return shell(
+    <NoticeScreen title="This email isn't on the Kendacar list" body={"You're signed in as " + auth.email + ", but that address hasn't been given access."}>
+      <button style={pillQuiet} onClick={signOut}>Sign out</button>
+    </NoticeScreen>);
+  if (role === "error") return shell(
+    <NoticeScreen title="Couldn't reach the foundation's records" body="Check your connection and try again.">
+      <button style={pill} onClick={() => setAttempt(n => n + 1)}>Try again</button>
+      <button style={pillQuiet} onClick={signOut}>Sign out</button>
+    </NoticeScreen>);
+
+  const isAdmin = auth.signedIn;
+  // Submitting and processing are family actions; advisors land on the dashboard instead.
+  const current = !isAdmin && ["queue", "request-grant", "contribute"].includes(view) ? "pulse" : view;
+  const barLink = { background: "none", border: "none", color: "#fff", cursor: "pointer", fontSize: 12, fontWeight: 700, textDecoration: "underline" };
+
+  return shell(
+    <div style={{ minHeight: "100vh", background: "#FFF8F2", fontFamily: "'Nunito Sans', sans-serif", color: "#1F3A38" }}>
+      <NavBar view={current} setView={nav} narrow={narrow} signedIn={isAdmin} pending={pending} />
+      <div style={{ background: isAdmin ? "#0E7A5F" : "#3A6B9C", color: "#fff", textAlign: "center", fontSize: 12, padding: "7px 16px", fontFamily: "'Nunito Sans', sans-serif" }}>
+        {isAdmin ? "Edit mode" : "Read-only access"} \u2014 signed in as {auth.email} \u00b7{" "}
+        {isAdmin && <>
+          <button onClick={() => nav("queue")} style={barLink}>Review submissions</button>
+          {pending > 0 && <span style={{ background: CORAL, color: "#fff", borderRadius: 20, padding: "1px 8px", fontSize: 11, fontWeight: 800, marginLeft: 6 }}>{pending}</span>} \u00b7{" "}
+        </>}
+        <button onClick={signOut} style={{ ...barLink, color: "#CFEFE5", fontWeight: 600 }}>Sign out</button>
+      </div>
+
+      {!loaded
+        ? <div style={{ padding: "80px 20px", textAlign: "center", color: "#7C8C8A", fontFamily: FONT_BODY }}>Loading the foundation's records\u2026</div>
+        : <>
+            {current === "pulse"          && <PulseLanding setView={nav} goGrantee={goGrantee} narrow={narrow} />}
+            {current === "investments"    && <InvestmentsView narrow={narrow} />}
+            {current === "grants"         && <GrantsView narrow={narrow} />}
+            {current === "contributions"  && <ContributionsView narrow={narrow} />}
+            {current === "grantees"       && <GranteesDirectory goGrantee={goGrantee} narrow={narrow} />}
+            {current === "grantee-detail" && <GranteeDetail org={selectedOrg} setView={nav} goGrantee={goGrantee} narrow={narrow} />}
+            {current === "request-grant"  && <RequestGrantForm narrow={narrow} setView={nav} />}
+            {current === "contribute"     && <ContributionForm narrow={narrow} setView={nav} />}
+            {current === "queue"          && <ProcessingQueue narrow={narrow} setView={nav} onChange={refreshPending} />}
+          </>}
+
+      <div style={{ padding: "32px 20px", textAlign: "center", fontSize: 11, color: "#7C8C8A", fontFamily: "'Fredoka', serif", letterSpacing: "0.08em" }}>
+        KENDACAR FOUNDATION &middot; CONFIDENTIAL &middot; FOR FAMILY USE ONLY
+      </div>
+    </div>
   );
 }
