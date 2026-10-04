@@ -3666,10 +3666,10 @@ function MarkSentRow({ req, onDone }) {
           ...(grantId ? { grant_id: grantId } : {}) });
       // 3) open a personal confirmation email in your mail app (if we have their address)
       if (req.requester_email) {
-        const subject = "Your Kendacar grant to " + req.org + " is on its way";
+        const subject = "Your Kendacar grant to " + orgLabel(req.org, granteeNotes) + " is on its way";
         const body =
           "Hi " + (req.requested_by || "there") + ",\n\n" +
-          "Great news — the grant you recommended for " + req.org + " (" + fmt(Number(amount)) + ") has been approved and sent.\n\n" +
+          "Great news — the grant you recommended for " + orgLabel(req.org, granteeNotes) + " (" + fmt(Number(amount)) + ") has been approved and sent.\n\n" +
           "Thank you for putting it forward.\n\n" +
           "— Kendacar Foundation";
         const a = document.createElement("a");
@@ -3684,7 +3684,7 @@ function MarkSentRow({ req, onDone }) {
     <div style={{ marginTop: 12, paddingTop: 14, borderTop: "1px dashed " + LINE }}>
       {fileGaps.length > 0 && (
         <div style={{ background: "#FFF6E5", border: "1px solid #F4C95D", borderRadius: 10, padding: "10px 14px", marginBottom: 12, fontSize: 13, color: "#7A5B12", fontFamily: FONT_BODY, lineHeight: 1.5 }}>
-          <strong>Not on file for {req.org}:</strong> {fileGaps.join(" · ")}. You can still post the grant and add these on the grantee's page later.
+          <strong>Not on file for {orgLabel(req.org, granteeNotes)}:</strong> {fileGaps.join(" · ")}. You can still post the grant and add these on the grantee's page later.
         </div>
       )}
       <div style={{ display: "grid", gridTemplateColumns: narrow720() ? "1fr" : "1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
@@ -3704,6 +3704,7 @@ function MarkSentRow({ req, onDone }) {
 
 function ProcessingQueue({ narrow, setView, onChange }) {
   const { session, setSession } = useAuth();
+  const { granteeNotes } = useData();
   const [items, setItems] = useState(null);
   const [err, setErr] = useState("");
   const [openId, setOpenId] = useState(null);
@@ -3768,7 +3769,8 @@ function ProcessingQueue({ narrow, setView, onChange }) {
           <Card key={r.id} style={{ padding: narrow ? "18px" : "20px 24px", borderLeft: "4px solid " + (r.status === "sent" ? "#1F9E6E" : r.status === "declined" ? "#C8BBA8" : CORAL) }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, color: INK }}>{r.org}</div>
+                <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, color: INK }}>{orgLabel(r.org, granteeNotes)}</div>
+                {orgLabel(r.org, granteeNotes) !== r.org && <div style={{ fontSize: 12, color: "#9B8E80", fontFamily: FONT_BODY, marginTop: 2 }}>submitted as &ldquo;{r.org}&rdquo;</div>}
                 <div style={{ fontSize: 13, color: "#7C8C8A", fontFamily: FONT_BODY, marginTop: 3 }}>
                   Recommended by {r.requested_by}{r.requester_email ? " · " + r.requester_email : ""} · {fmtDate(r.created_at)}
                 </div>
