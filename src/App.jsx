@@ -344,6 +344,8 @@ const useData = () => useContext(DataContext);
 const GRANT_REQUEST_URL = "";   // e.g. "https://forms.gle/xxxxxxxx"
 const CONTRIBUTION_URL  = "";   // e.g. "https://forms.gle/yyyyyyyy"
 const DRIVE_URL = "https://drive.google.com/drive/u/0/folders/1CP4Dpt0hDsw2n-3JYW_F8rVo42Nu6aYH";
+// The custodian's own site. It asks for its own sign-in; no credentials live here.
+const JPM_URL = "https://secure.chase.com/web/auth/dashboard#/dashboard/overview";
 
 // =============================================================================
 //  CONSTANTS & HELPERS
@@ -1408,7 +1410,15 @@ function InvestmentsView({ narrow }) {
     <div style={{ maxWidth: 1140, margin: "0 auto", padding: narrow ? "28px 16px" : "36px 40px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
         <SectionTitle title="Investments" sub={"The foundation's endowment — invested to grow and fund the giving · as of " + investments.asOf} />
-        {signedIn && !editing && <MiniButton kind="edit" onClick={() => setEditing(true)}>Edit figures</MiniButton>}
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {signedIn && (
+            <a href={JPM_URL} target="_blank" rel="noopener noreferrer" title="Open the J.P. Morgan (Chase) account dashboard — you'll sign in there"
+              style={{ display: "inline-flex", alignItems: "center", gap: 6, textDecoration: "none", background: "#fff", color: TEAL, border: "1.5px solid " + TEAL, borderRadius: 10, padding: "7px 14px", fontSize: 13, fontWeight: 700, fontFamily: FONT_BODY }}>
+              J.P. Morgan ↗
+            </a>
+          )}
+          {signedIn && !editing && <MiniButton kind="edit" onClick={() => setEditing(true)}>Edit figures</MiniButton>}
+        </div>
       </div>
 
       {signedIn && editing && <InvestmentEditor investments={investments} onDone={() => setEditing(false)} />}
