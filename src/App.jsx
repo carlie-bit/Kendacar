@@ -145,6 +145,22 @@ async function authedWrite(session, setSession, method, path, body) {
 }
 
 // An authenticated READ (for admin-only tables like the submissions queue).
+// Call one of the project's edge functions as the signed-in user.
+async function callFunction(session, setSession, name, body) {
+  let s = session;
+  if (s && s.expires_at && s.expires_at < Date.now() + 60000) {
+    const r = await refreshSession(s); if (r) { s = r; setSession(r); saveSession(r); }
+  }
+  const res = await fetch(SUPABASE_URL + "/functions/v1/" + name, {
+    method: "POST",
+    headers: { apikey: SUPABASE_KEY, Authorization: "Bearer " + s.access_token, "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  const out = await res.json().catch(() => ({}));
+  if (!res.ok || out.ok === false) throw new Error(out.error || ("The email service failed (" + res.status + ")."));
+  return out;
+}
+
 async function authedGet(session, setSession, path) {
   let s = session;
   if (s && s.expires_at && s.expires_at < Date.now() + 60000) {
@@ -3712,18 +3728,143 @@ function MarkSentRow({ req, onDone }) {
   );
 }
 
+// =============================================================================
+//  FAMILY VOTE
+//  A grant can be sent to the family members who vote. Each gets an email with
+//  their own Approve / Let's discuss / Decline links. One "discuss" holds it.
+// =============================================================================
+
+const VOTE_CHOICE = {
+  approve: { label: "Approved", mark: "✓", color: "#0E7A5F", bg: "#EAF7F2" },
+  discuss: { label: "Wants to discuss", mark: "•", color: "#9A7B1E", bg: "#FFF6E5" },
+  decline: { label: "Declined", mark: "×", color: "#B5451B", bg: "#FBEDE8" },
+};
+const VOTE_STATE = {
+  open:     { label: "Vote out with the family", color: "#0B6E6E", bg: "#EAF7F2", border: "#BFE0DE" },
+  hold:     { label: "On hold — someone wants to discuss", color: "#7A5B12", bg: "#FFF6E5", border: "#F4C95D" },
+  approved: { label: "Approved by the family", color: "#0E7A5F", bg: "#EAF7F2", border: "#BFE0DE" },
+  declined: { label: "Declined by the family", color: "#6B6258", bg: "#F3ECE3", border: "#E2D7C9" },
+};
+const SOURCE_TAG = {
+  family:    { label: "Family recommendation", color: "#0E7A5F", bg: "#EAF7F2", border: "#BFE0DE" },
+  solicited: { label: "Solicited — came from outside", color: "#9A4B1E", bg: "#FFF1E8", border: "#F2885E" },
+};
+
+function VotePanel({ req, votes, onChange }) {
+  const { session, setSession } = useAuth();
+  const [busy, setBusy] = useState("");
+  const [err, setErr] = useState("");
+  const [composing, setComposing] = useState(false);
+  const [note, setNote] = useState(req.vote_note || "");
+
+  const tally = { approve: 0, discuss: 0, decline: 0, open: 0 };
+  votes.forEach(v => { v.choice ? tally[v.choice]++ : tally.open++; });
+  const state = VOTE_STATE[req.vote_state];
+
+  async function send(resend) {
+    setBusy("send"); setErr("");
+    try {
+      if (!resend) {
+        await authedWrite(session, setSession, "PATCH", "grant_requests?id=eq." + req.id, { vote_note: note.trim() || null });
+        await authedWrite(session, setSession, "POST", "rpc/open_grant_vote", { p_request_id: req.id });
+      }
+      const out = await callFunction(session, setSession, "send-ballot", { request_id: req.id });
+      setComposing(false);
+      if (out.failed && out.failed.length) setErr("Sent to " + (out.sent || []).length + ". Couldn't reach: " + out.failed.join("; "));
+      onChange();
+    } catch (e) {
+      setErr(String(e.message).includes("no_voters")
+        ? "Nobody is set to receive ballots yet. Open Access and tick \u201cGets grant ballots\u201d for the family members who vote."
+        : e.message);
+    } finally { setBusy(""); }
+  }
+  async function setState(next) {
+    setBusy(next); setErr("");
+    try { await authedWrite(session, setSession, "POST", "rpc/set_grant_vote_state", { p_request_id: req.id, p_state: next }); onChange(); }
+    catch (e) { setErr(e.message); }
+    finally { setBusy(""); }
+  }
+
+  if (req.vote_state === "none") {
+    return (
+      <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px dashed " + LINE }}>
+        {composing ? (
+          <div style={{ background: "#FBF4EC", borderRadius: 12, padding: 16 }}>
+            <div style={{ fontFamily: FONT_BODY, fontWeight: 700, fontSize: 13, marginBottom: 6 }}>Anything to tell the family? (optional)</div>
+            <textarea rows={2} value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. They asked us directly; the board meets Nov 15."
+              style={{ ...formInput, fontSize: 14, padding: "9px 12px", resize: "vertical", marginBottom: 10 }} />
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <MiniButton kind="save" onClick={() => send(false)} disabled={busy === "send"}>{busy === "send" ? "Sending…" : "Send the ballots"}</MiniButton>
+              <MiniButton kind="cancel" onClick={() => setComposing(false)} disabled={busy === "send"}>Cancel</MiniButton>
+            </div>
+            <div style={{ fontSize: 11.5, color: "#9B8E80", marginTop: 8, fontFamily: FONT_BODY }}>
+              Each voter gets their own email with Approve, Let&rsquo;s discuss and Decline buttons. One click records it.
+            </div>
+            {err && <div style={{ color: "#B5451B", fontSize: 12.5, marginTop: 8, fontFamily: FONT_BODY }}>{err}</div>}
+          </div>
+        ) : (
+          <>
+            <MiniButton kind="edit" onClick={() => setComposing(true)}>Send to family vote →</MiniButton>
+            {err && <div style={{ color: "#B5451B", fontSize: 12.5, marginTop: 8, fontFamily: FONT_BODY }}>{err}</div>}
+          </>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px dashed " + LINE }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+        {state && <span style={{ background: state.bg, color: state.color, border: "1px solid " + state.border, borderRadius: 20, padding: "3px 12px", fontSize: 12, fontWeight: 800, fontFamily: FONT_BODY }}>{state.label}</span>}
+        <span style={{ fontSize: 12.5, color: "#7C8C8A", fontFamily: FONT_BODY }}>
+          {tally.approve} approved · {tally.discuss} to discuss · {tally.decline} declined · {tally.open} waiting
+        </span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 6, marginBottom: 12 }}>
+        {votes.map(v => {
+          const c = v.choice ? VOTE_CHOICE[v.choice] : null;
+          return (
+            <div key={v.id} style={{ fontSize: 13, fontFamily: FONT_BODY, color: c ? c.color : "#9B8E80" }}>
+              <span style={{ fontWeight: 800, marginRight: 6 }}>{c ? c.mark : "–"}</span>
+              {v.voter_name || v.voter_email}
+              <span style={{ color: "#9B8E80" }}> · {c ? c.label.toLowerCase() : (v.sent_at ? "no answer yet" : "not sent")}</span>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <button onClick={() => send(true)} disabled={busy === "send"} style={subAction(false)}>{busy === "send" ? "Sending…" : "Resend ballots"}</button>
+        {req.vote_state === "hold" && <button onClick={() => setState("open")} disabled={busy === "open"} style={subAction(false)}>Discussed — reopen</button>}
+        {req.vote_state !== "approved" && <button onClick={() => setState("approved")} disabled={busy === "approved"} style={subAction(false)}>Mark approved</button>}
+        <button onClick={() => setState("none")} disabled={busy === "none"} style={subAction(true)}>Close the vote</button>
+      </div>
+      {err && <div style={{ color: "#B5451B", fontSize: 12.5, marginTop: 8, fontFamily: FONT_BODY }}>{err}</div>}
+    </div>
+  );
+}
+
 function ProcessingQueue({ narrow, setView, onChange }) {
   const { session, setSession } = useAuth();
   const { granteeNotes } = useData();
   const [items, setItems] = useState(null);
+  const [votes, setVotes] = useState([]);
   const [err, setErr] = useState("");
   const [openId, setOpenId] = useState(null);
   const [tab, setTab] = useState("new");
 
+  async function setSource(r, next) {
+    try { await authedWrite(session, setSession, "PATCH", "grant_requests?id=eq." + r.id, { source: next }); load(); }
+    catch (e) { setErr(e.message); }
+  }
+
   async function load() {
     try {
       // Pull every submission, not just the waiting ones — the processed history lives here too.
-      setItems(await authedGet(session, setSession, "grant_requests?order=created_at.desc&select=id,org,amount,requested_by,requester_email,category,notes,created_at,status,check_number,check_date,processed_at"));
+      const [reqs, votes] = await Promise.all([
+        authedGet(session, setSession, "grant_requests?order=created_at.desc&select=id,org,amount,requested_by,requester_email,category,notes,created_at,status,check_number,check_date,processed_at,source,vote_state,vote_note"),
+        authedGet(session, setSession, "grant_votes?select=id,request_id,voter_email,voter_name,choice,voted_at,sent_at&order=voter_name"),
+      ]);
+      setItems(reqs); setVotes(votes || []);
       onChange && onChange();
     } catch (e) { setErr(e.message); }
   }
@@ -3784,7 +3925,18 @@ function ProcessingQueue({ narrow, setView, onChange }) {
                 <div style={{ fontSize: 13, color: "#7C8C8A", fontFamily: FONT_BODY, marginTop: 3 }}>
                   Recommended by {r.requested_by}{r.requester_email ? " · " + r.requester_email : ""} · {fmtDate(r.created_at)}
                 </div>
-                {r.category && <span style={{ display: "inline-block", marginTop: 8, background: (CAT_COLORS[r.category] || "#999") + "18", color: CAT_COLORS[r.category] || "#999", borderRadius: 20, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>{r.category}</span>}
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
+                  {r.category && <span style={{ display: "inline-block", background: (CAT_COLORS[r.category] || "#999") + "18", color: CAT_COLORS[r.category] || "#999", borderRadius: 20, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>{r.category}</span>}
+                  {(() => { const t = SOURCE_TAG[r.source || "family"]; return (
+                    <span style={{ background: t.bg, color: t.color, border: "1px solid " + t.border, borderRadius: 20, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>{t.label}</span>
+                  ); })()}
+                  {r.status === "new" && (
+                    <button onClick={() => setSource(r, (r.source || "family") === "solicited" ? "family" : "solicited")} style={subAction(false)}
+                      title="Solicited means the request came to us from outside, rather than from the family">
+                      {(r.source || "family") === "solicited" ? "Mark as family" : "Mark as solicited"}
+                    </button>
+                  )}
+                </div>
                 {r.notes && <div style={{ fontSize: 13.5, color: INK, fontFamily: FONT_BODY, lineHeight: 1.55, marginTop: 10, maxWidth: 560 }}>{r.notes}</div>}
               </div>
               <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
@@ -3792,6 +3944,7 @@ function ProcessingQueue({ narrow, setView, onChange }) {
                 <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 24, color: TEAL }}>{r.amount != null ? fmt(r.amount) : "—"}</div>
               </div>
             </div>
+            {r.status === "new" && <VotePanel req={r} votes={votes.filter(v => v.request_id === r.id)} onChange={load} />}
             {r.status === "new" && (openId === r.id ? (
               <MarkSentRow req={r} onDone={after} />
             ) : (
@@ -3882,6 +4035,19 @@ function AccessView({ narrow }) {
     catch (e) { setErr(accessError(e)); }
     finally { setBusy(""); }
   }
+  async function setBallot(r, checked) {
+    setBusy(r.email); setErr("");
+    try { await authedWrite(session, setSession, "POST", "rpc/kendacar_access_set_ballot", { p_email: r.email, p_ballot: checked, p_name: r.display_name || null }); await load(); }
+    catch (e) { setErr(accessError(e)); }
+    finally { setBusy(""); }
+  }
+  async function saveName(r, name) {
+    if ((r.display_name || "") === name.trim()) return;
+    setBusy(r.email); setErr("");
+    try { await authedWrite(session, setSession, "POST", "rpc/kendacar_access_set_ballot", { p_email: r.email, p_ballot: r.ballot, p_name: name.trim() }); await load(); }
+    catch (e) { setErr(accessError(e)); }
+    finally { setBusy(""); }
+  }
   async function remove(r) {
     if (!window.confirm("Remove " + r.email + "? They won't be able to sign in to Kendacar anymore.")) return;
     setBusy(r.email); setErr("");
@@ -3936,6 +4102,18 @@ function AccessView({ narrow }) {
                   {r.email}{locked && <span style={{ color: "#9B8E80", fontWeight: 600 }}> (you)</span>}
                 </div>
                 <span style={{ display: "inline-block", marginTop: 5, fontSize: 11.5, fontWeight: 800, color: st.color, background: st.bg, borderRadius: 20, padding: "2px 10px", fontFamily: FONT_BODY }}>{st.text}</span>
+                {r.role === "admin" && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8, flexWrap: "wrap" }}>
+                    <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, color: INK, fontFamily: FONT_BODY, cursor: "pointer" }}>
+                      <input type="checkbox" checked={!!r.ballot} disabled={busy === r.email} onChange={e => setBallot(r, e.target.checked)} />
+                      Gets grant ballots
+                    </label>
+                    {r.ballot && (
+                      <input defaultValue={r.display_name || ""} onBlur={e => saveName(r, e.target.value)} placeholder="Name for the email greeting"
+                        style={{ ...formInput, width: 220, fontSize: 13, padding: "6px 10px" }} />
+                    )}
+                  </div>
+                )}
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                 <select value={r.role} disabled={locked || busy === r.email} onChange={e => changeRole(r, e.target.value)} title={locked ? "You can't change your own access" : "Change access"}
@@ -3952,7 +4130,8 @@ function AccessView({ narrow }) {
       </Card>
       {rows && rows.length > 0 && (
         <div style={{ fontSize: 12.5, color: "#7C8C8A", marginTop: 12, fontFamily: FONT_BODY }}>
-          {families} family · {rows.length - families} advisor{rows.length - families === 1 ? "" : "s"}. Removing someone stops them signing in; you can add them back anytime.
+          {families} family · {rows.length - families} advisor{rows.length - families === 1 ? "" : "s"} · {rows.filter(r => r.ballot).length} receive grant ballots.
+          Removing someone stops them signing in; you can add them back anytime.
         </div>
       )}
     </div>
