@@ -3923,7 +3923,9 @@ function ProcessingQueue({ narrow, setView, onChange }) {
                 <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, color: INK }}>{orgLabel(r.org, granteeNotes)}</div>
                 {orgLabel(r.org, granteeNotes) !== r.org && <div style={{ fontSize: 12, color: "#9B8E80", fontFamily: FONT_BODY, marginTop: 2 }}>submitted as &ldquo;{r.org}&rdquo;</div>}
                 <div style={{ fontSize: 13, color: "#7C8C8A", fontFamily: FONT_BODY, marginTop: 3 }}>
-                  Recommended by {r.requested_by}{r.requester_email ? " · " + r.requester_email : ""} · {fmtDate(r.created_at)}
+                  {(r.source || "family") === "solicited"
+                    ? <>Came to us from outside{r.requested_by ? " · logged by " + r.requested_by : ""} · {fmtDate(r.created_at)}</>
+                    : <>Recommended by {r.requested_by}{r.requester_email ? " · " + r.requester_email : ""} · {fmtDate(r.created_at)}</>}
                 </div>
                 <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
                   {r.category && <span style={{ display: "inline-block", background: (CAT_COLORS[r.category] || "#999") + "18", color: CAT_COLORS[r.category] || "#999", borderRadius: 20, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>{r.category}</span>}
