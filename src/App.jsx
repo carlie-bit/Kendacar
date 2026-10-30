@@ -3479,11 +3479,17 @@ function FormShell({ title, accent, lead, narrow, setView, children, done, doneM
   );
 }
 
+const REQUEST_SOURCES = [
+  { id: "family",    title: "I'm putting it forward", blurb: "My own recommendation — I think Kendacar should support them." },
+  { id: "solicited", title: "They came to us",        blurb: "An ask that arrived from outside. I'm only passing it along." },
+];
+
 function RequestGrantForm({ narrow, setView }) {
   const { grants } = useData();
   const { session, setSession } = useAuth();
   const orgNames = useMemo(() => Array.from(new Set(grants.map(g => normalizeOrg(g.org)))).sort(), [grants]);
   const [org, setOrg] = useState("");
+  const [source, setSource] = useState("family");
   const [requestedBy, setRequestedBy] = useState("");
   const [email, setEmail] = useState("");
   const [amount, setAmount] = useState("");
@@ -3493,13 +3499,15 @@ function RequestGrantForm({ narrow, setView }) {
   const [err, setErr] = useState("");
   const [done, setDone] = useState(false);
 
+  const solicited = source === "solicited";
+
   async function submit(e) {
     e.preventDefault();
     if (!org.trim() || !requestedBy.trim()) { setErr("Please add the organization and your name."); return; }
     setBusy(true); setErr("");
     try {
       await authedWrite(session, setSession, "POST", "grant_requests", {
-        org: org.trim(), requested_by: requestedBy.trim(),
+        org: org.trim(), requested_by: requestedBy.trim(), source,
         requester_email: email.trim() || null,
         amount: amount === "" ? null : Number(amount),
         category: category || null, notes: notes.trim() || null,
@@ -3509,19 +3517,44 @@ function RequestGrantForm({ narrow, setView }) {
   }
 
   return (
-    <FormShell narrow={narrow} setView={setView} accent={CORAL} lead="put one forward" title="Recommend a grant"
-      done={done} doneMsg="Your recommendation is in. A trustee will review it for the next giving cycle.">
+    <FormShell narrow={narrow} setView={setView} accent={CORAL}
+      lead={solicited ? "pass it along" : "put one forward"}
+      title={solicited ? "Log an outside request" : "Recommend a grant"}
+      done={done}
+      doneMsg={solicited
+        ? "Logged as an outside request. The family will see that it came to us, not from you."
+        : "Your recommendation is in. A trustee will review it for the next giving cycle."}>
       <p style={{ fontFamily: FONT_BODY, fontSize: 15, color: "#6F7E7C", lineHeight: 1.6, marginBottom: 22 }}>
-        Know an organization Kendacar should support? Put it forward here and a trustee will take a look.
+        {solicited
+          ? "Somebody has asked Kendacar for money. Record what they want here — it reaches the family as a request from them, not a recommendation from you."
+          : "Know an organization Kendacar should support? Put it forward here and a trustee will take a look."}
       </p>
       <form onSubmit={submit}>
+        <FormField label="Where has this come from?">
+          <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "1fr 1fr", gap: 10 }}>
+            {REQUEST_SOURCES.map(o => {
+              const on = source === o.id;
+              const tag = SOURCE_TAG[o.id];
+              return (
+                <button key={o.id} type="button" onClick={() => setSource(o.id)} aria-pressed={on} style={{
+                  textAlign: "left", cursor: "pointer", borderRadius: 12, padding: "12px 14px",
+                  background: on ? tag.bg : "#fff", border: "1.5px solid " + (on ? tag.border : LINE),
+                  fontFamily: FONT_BODY,
+                }}>
+                  <div style={{ fontWeight: 700, fontSize: 14, color: on ? tag.color : INK }}>{o.title}</div>
+                  <div style={{ fontSize: 12.5, color: "#7C8C8A", marginTop: 3, lineHeight: 1.45 }}>{o.blurb}</div>
+                </button>
+              );
+            })}
+          </div>
+        </FormField>
         <FormField label="Organization" hint="Start typing — past grantees will suggest themselves.">
           <input list="org-options" value={org} onChange={e => setOrg(e.target.value)} placeholder="Organization name" style={formInput} />
           <datalist id="org-options">{orgNames.map(o => <option key={o} value={o} />)}</datalist>
         </FormField>
         <div style={{ display: "grid", gridTemplateColumns: narrow ? "1fr" : "1fr 1fr", gap: 14 }}>
-          <FormField label="Your name">
-            <input value={requestedBy} onChange={e => setRequestedBy(e.target.value)} placeholder="Who's recommending this" style={formInput} />
+          <FormField label="Your name" hint={solicited ? "Just so we know who logged it." : undefined}>
+            <input value={requestedBy} onChange={e => setRequestedBy(e.target.value)} placeholder={solicited ? "Who's entering this" : "Who's recommending this"} style={formInput} />
           </FormField>
           <FormField label="Your email" hint="So we can let you know when it's sent.">
             <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@email.com" style={formInput} />
@@ -3538,12 +3571,14 @@ function RequestGrantForm({ narrow, setView }) {
             </select>
           </FormField>
         </div>
-        <FormField label="Why this organization?" hint="Optional — a sentence or two helps.">
-          <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={4} placeholder="What they do and why it matters" style={{ ...formInput, resize: "vertical" }} />
+        <FormField label={solicited ? "What are they asking for?" : "Why this organization?"} hint="Optional — a sentence or two helps.">
+          <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={4}
+            placeholder={solicited ? "What they do and what they have asked us for" : "What they do and why it matters"}
+            style={{ ...formInput, resize: "vertical" }} />
         </FormField>
         {err && <div style={{ color: "#B5451B", fontSize: 13, marginBottom: 12 }}>{err}</div>}
         <button type="submit" disabled={busy} style={{ background: CORAL, color: "#fff", border: "none", borderRadius: 12, padding: "13px 26px", fontSize: 15, fontWeight: 700, fontFamily: FONT_BODY, cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }}>
-          {busy ? "Sending…" : "Submit recommendation"}
+          {busy ? "Sending…" : solicited ? "Log this request" : "Submit recommendation"}
         </button>
       </form>
     </FormShell>
