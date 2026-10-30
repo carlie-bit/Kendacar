@@ -122,7 +122,7 @@ async function refreshSession(session) {
 }
 
 // A write request authenticated as the signed-in user. Refreshes once on 401.
-async function authedWrite(session, setSession, method, path, body) {
+async function authedWrite(session, setSession, method, path, body, prefer) {
   let s = session;
   if (s && s.expires_at && s.expires_at < Date.now() + 60000) {
     const r = await refreshSession(s); if (r) { s = r; setSession(r); saveSession(r); }
@@ -131,7 +131,7 @@ async function authedWrite(session, setSession, method, path, body) {
     method,
     headers: {
       apikey: SUPABASE_KEY, Authorization: "Bearer " + tok,
-      "Content-Type": "application/json", Prefer: "return=minimal",
+      "Content-Type": "application/json", Prefer: prefer || "return=minimal",
     },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -917,6 +917,7 @@ function NavBar({ view, setView, narrow, signedIn, pending }) {
     { id: "grants",        label: "Grants Made" },
     { id: "contributions", label: "Contributions" },
     { id: "grantees",      label: "Grantees" },
+    { id: "transactions",  label: "Transactions" },
   ];
   // Trustees get the submissions queue as a first-class tab, with a count of what's waiting.
   if (signedIn) items.push({ id: "queue", label: "Review", badge: pending });
@@ -4146,12 +4147,396 @@ function AccessView({ narrow }) {
 //  can be shared. Someone signed out sees the sign-in first, then lands on that page.
 // =============================================================================
 
+// =============================================================================
+//  TRANSACTIONS
+//  Bank activity, uploaded from a CSV export whenever Carlie gets round to it.
+//  Lines that line up with a grant we wrote or a gift we received explain
+//  themselves; everything else is left blank for her to say what it was for.
+// =============================================================================
+
+// Copes with quoted fields, embedded commas and either line ending.
+function parseCSV(text) {
+  const rows = [];
+  let row = [], field = "", quoted = false;
+  const s = String(text || "").replace(/^﻿/, "");
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (quoted) {
+      if (c === '"') { if (s[i + 1] === '"') { field += '"'; i++; } else quoted = false; }
+      else field += c;
+    } else if (c === '"') quoted = true;
+    else if (c === ",") { row.push(field); field = ""; }
+    else if (c === "\n" || c === "\r") {
+      if (c === "\r" && s[i + 1] === "\n") i++;
+      row.push(field); field = "";
+      if (row.some(x => x.trim() !== "")) rows.push(row);
+      row = [];
+    } else field += c;
+  }
+  row.push(field);
+  if (row.some(x => x.trim() !== "")) rows.push(row);
+  return rows;
+}
+
+// Exact header matches win; a partial match is the fallback. Order matters —
+// a Chase export has both "Details" and "Description" and we want the latter.
+const HEADER_HINTS = {
+  date:        ["posting date", "post date", "transaction date", "date", "posted"],
+  description: ["description", "details", "memo", "payee", "merchant", "name"],
+  amount:      ["amount", "transaction amount"],
+  debit:       ["debit", "withdrawal", "withdrawals", "money out"],
+  credit:      ["credit", "deposit", "deposits", "money in"],
+  check:       ["check or slip #", "check number", "check #", "check no", "check", "serial"],
+  balance:     ["balance", "running balance"],
+};
+const COLUMN_LABEL = {
+  date: "Date", description: "Description", amount: "Amount",
+  debit: "Money out", credit: "Money in", check: "Check number", balance: "Balance",
+};
+
+function detectColumns(header) {
+  const clean = (header || []).map(h => String(h || "").trim().toLowerCase());
+  const used = new Set();
+  const pick = keys => {
+    for (const k of keys) { const i = clean.indexOf(k); if (i >= 0 && !used.has(i)) return i; }
+    for (const k of keys) { const i = clean.findIndex((h, j) => !used.has(j) && h.includes(k)); if (i >= 0) return i; }
+    return -1;
+  };
+  const map = {};
+  for (const field of ["date", "amount", "check", "balance", "description", "debit", "credit"]) {
+    const i = pick(HEADER_HINTS[field]);
+    if (i >= 0) { map[field] = i; used.add(i); }
+  }
+  return map;
+}
+
+function parseMoney(v) {
+  if (v == null) return null;
+  let s = String(v).trim();
+  if (!s) return null;
+  let neg = false;
+  if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1); }
+  s = s.replace(/[$,\s]/g, "");
+  if (s.startsWith("-")) { neg = true; s = s.slice(1); }
+  else if (s.startsWith("+")) s = s.slice(1);
+  if (!/^\d*\.?\d+$/.test(s) || s === "." || s === "") return null;
+  const n = Number(s);
+  if (!Number.isFinite(n)) return null;
+  return neg ? -n : n;
+}
+
+const isoDay = d => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+
+function parseDay(v) {
+  const s = String(v || "").trim();
+  if (!s) return null;
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return m[1] + "-" + m[2].padStart(2, "0") + "-" + m[3].padStart(2, "0");
+  m = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})/);
+  if (m) {
+    const y = m[3].length === 2 ? String(2000 + Number(m[3])) : m[3];
+    return y + "-" + m[1].padStart(2, "0") + "-" + m[2].padStart(2, "0");
+  }
+  const t = Date.parse(s);
+  return Number.isNaN(t) ? null : isoDay(new Date(t));
+}
+
+// Two identical lines on the same statement are two real transactions, so the
+// fingerprint carries an occurrence number. Re-uploading an overlapping export
+// then produces the same fingerprints and the database turns the repeats away.
+function fingerprint(t, seen) {
+  const base = [t.txn_date, Number(t.amount).toFixed(2), (t.check_number || "").trim(),
+    (t.description || "").trim().toLowerCase().replace(/\s+/g, " ").slice(0, 90)].join("|");
+  const n = (seen.get(base) || 0) + 1;
+  seen.set(base, n);
+  return n === 1 ? base : base + "#" + n;
+}
+
+function rowsFromCsv(rows, map, fileName) {
+  const out = [], unreadable = [];
+  const seen = new Map();
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
+    const txn_date = parseDay(r[map.date]);
+    let amount = map.amount != null ? parseMoney(r[map.amount]) : null;
+    if (amount == null) {
+      const d = map.debit != null ? parseMoney(r[map.debit]) : null;
+      const c = map.credit != null ? parseMoney(r[map.credit]) : null;
+      if (d != null && d !== 0) amount = -Math.abs(d);
+      else if (c != null && c !== 0) amount = Math.abs(c);
+    }
+    if (!txn_date || amount == null) { unreadable.push(i + 1); continue; }
+    const t = {
+      txn_date,
+      description: map.description != null ? String(r[map.description] || "").trim() : "",
+      amount,
+      check_number: map.check != null ? String(r[map.check] || "").trim() || null : null,
+      balance: map.balance != null ? parseMoney(r[map.balance]) : null,
+      source_file: fileName,
+    };
+    t.row_hash = fingerprint(t, seen);
+    out.push(t);
+  }
+  return { rows: out, unreadable };
+}
+
+const daysApart = (a, b) => Math.abs((new Date(a + "T00:00:00") - new Date(String(b).slice(0, 10) + "T00:00:00")) / 86400000);
+
+// What we already know that could explain a line. A check number is proof; an
+// amount on its own is only a guess, so we take it when exactly one thing fits.
+function matchRow(t, grants, gifts, notes) {
+  const check = (t.check_number || "").trim().replace(/^0+/, "");
+  if (check) {
+    const g = (grants || []).find(x => String(x.check_number || "").trim().replace(/^0+/, "") === check);
+    if (g) return { kind: "grant", id: g.id, note: "Grant to " + orgLabel(g.org, notes) + " · check " + check };
+  }
+  const amt = Math.abs(Number(t.amount));
+  if (!amt) return null;
+  if (Number(t.amount) < 0) {
+    const hits = (grants || []).filter(g => Math.abs(Number(g.amount) - amt) < 0.01
+      && (g.check_date ? daysApart(t.txn_date, g.check_date) <= 21 : String(g.year) === t.txn_date.slice(0, 4)));
+    if (hits.length === 1) return { kind: "grant", id: hits[0].id, note: "Grant to " + orgLabel(hits[0].org, notes) };
+    return null;
+  }
+  const near = (gifts || []).filter(g => Math.abs(Number(g.amount) - amt) < 0.01 && g.gift_date && daysApart(t.txn_date, g.gift_date) <= 21);
+  if (near.length === 1) return { kind: "gift", id: near[0].id, note: "Gift from " + (near[0].donor || "a donor") };
+  if (near.length > 1) {
+    // Several gifts of the same size: the description may name the donor.
+    const desc = (t.description || "").toLowerCase();
+    const named = near.filter(g => g.donor && desc.includes(String(g.donor).toLowerCase().split(" ")[0]));
+    if (named.length === 1) return { kind: "gift", id: named[0].id, note: "Gift from " + named[0].donor };
+  }
+  return null;
+}
+
+const fmtCents = n => "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+const TXN_TABS = [
+  { id: "todo", label: "Needs a note" },
+  { id: "matched", label: "Explained" },
+  { id: "all", label: "Everything" },
+];
+
+function TransactionsView({ narrow }) {
+  const { session, setSession, signedIn } = useAuth();
+  const { grants, contributionGifts, granteeNotes } = useData();
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState("");
+  const [tab, setTab] = useState("todo");
+  const [preview, setPreview] = useState(null);   // what a chosen file would add
+  const [busy, setBusy] = useState("");
+  const fileRef = useRef(null);
+
+  async function load() {
+    setErr("");
+    try {
+      setRows(await authedGet(session, setSession,
+        "transactions?select=id,txn_date,description,amount,check_number,comment,match_kind,match_note,source_file,row_hash&order=txn_date.desc,id.desc"));
+    } catch (e) { setErr(e.message); setRows([]); }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function choose(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setErr(""); setBusy("read");
+    try {
+      const text = await file.text();
+      const table = parseCSV(text);
+      if (table.length < 2) throw new Error("That file has no rows in it.");
+      const map = detectColumns(table[0]);
+      if (map.date == null) throw new Error("Couldn't find a date column. The first row of the file needs to be the column headings.");
+      if (map.amount == null && map.debit == null && map.credit == null) throw new Error("Couldn't find an amount column.");
+      const { rows: parsed, unreadable } = rowsFromCsv(table, map, file.name);
+      if (!parsed.length) throw new Error("Couldn't read any transactions out of that file.");
+      const have = new Set((rows || []).map(r => r.row_hash));
+      setPreview({ file: file.name, map, headers: table[0], parsed, unreadable, alreadyHere: parsed.filter(p => have.has(p.row_hash)).length });
+    } catch (e2) { setErr(e2.message); }
+    finally { setBusy(""); }
+  }
+
+  async function doImport() {
+    if (!preview) return;
+    setBusy("import"); setErr("");
+    try {
+      const have = new Set((rows || []).map(r => r.row_hash));
+      const payload = preview.parsed.filter(t => !have.has(t.row_hash)).map(t => {
+        const m = matchRow(t, grants, contributionGifts, granteeNotes);
+        return { ...t, match_kind: m?.kind || null, match_id: m?.id || null, match_note: m?.note || null, comment: m?.note || null };
+      });
+      for (let i = 0; i < payload.length; i += 200) {
+        await authedWrite(session, setSession, "POST", "transactions?on_conflict=row_hash", payload.slice(i, i + 200), "resolution=ignore-duplicates,return=minimal");
+      }
+      setPreview(null);
+      await load();
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(""); }
+  }
+
+  async function saveComment(r, text) {
+    if ((r.comment || "") === text) return;
+    try {
+      await authedWrite(session, setSession, "PATCH", "transactions?id=eq." + r.id, { comment: text || null });
+      setRows(list => list.map(x => x.id === r.id ? { ...x, comment: text || null } : x));
+    } catch (e) { setErr(e.message); }
+  }
+
+  async function removeFile(name, count) {
+    if (!window.confirm("Remove all " + count + " lines that came from " + name + "? Anything you typed against them goes too.")) return;
+    setBusy("del"); setErr("");
+    try {
+      await authedWrite(session, setSession, "DELETE", "transactions?source_file=eq." + encodeURIComponent(name));
+      await load();
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(""); }
+  }
+
+  const list = rows || [];
+  const needs = list.filter(r => !r.comment || !r.comment.trim());
+  const shown = tab === "todo" ? needs : tab === "matched" ? list.filter(r => r.comment && r.comment.trim()) : list;
+  const counts = { todo: needs.length, matched: list.length - needs.length, all: list.length };
+  const moneyIn = list.reduce((s, r) => s + (Number(r.amount) > 0 ? Number(r.amount) : 0), 0);
+  const moneyOut = list.reduce((s, r) => s + (Number(r.amount) < 0 ? -Number(r.amount) : 0), 0);
+  const files = Object.entries(list.reduce((acc, r) => { if (r.source_file) acc[r.source_file] = (acc[r.source_file] || 0) + 1; return acc; }, {}));
+
+  return (
+    <div style={{ maxWidth: 1140, margin: "0 auto", padding: narrow ? "28px 16px" : "36px 40px" }}>
+      <SectionTitle title="Transactions" sub="Upload the account activity whenever you like. Anything that matches a grant we wrote or a gift we received explains itself; the rest is yours to fill in." />
+
+      {err && <div style={{ color: "#B5451B", fontSize: 13, marginBottom: 12 }}>{err}</div>}
+
+      {signedIn && (
+        <Card style={{ padding: narrow ? 18 : 22, marginBottom: 22, background: "#FBF4EC" }}>
+          {!preview ? (
+            <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+              <input ref={fileRef} type="file" accept=".csv,text/csv" onChange={choose} style={{ display: "none" }} />
+              <MiniButton kind="save" onClick={() => fileRef.current?.click()} disabled={busy === "read"}>
+                {busy === "read" ? "Reading…" : "Upload a CSV →"}
+              </MiniButton>
+              <div style={{ fontSize: 13, color: "#7C8C8A", fontFamily: FONT_BODY }}>
+                Export the account activity from the bank and pick the file. Uploading the same period twice is safe — repeats are ignored.
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 17, marginBottom: 8 }}>{preview.file}</div>
+              <div style={{ fontSize: 13.5, color: "#5E6E6C", fontFamily: FONT_BODY, lineHeight: 1.7, marginBottom: 12 }}>
+                {preview.parsed.length} transaction{preview.parsed.length === 1 ? "" : "s"} read
+                {preview.alreadyHere > 0 && <> · <strong>{preview.alreadyHere}</strong> already here, which will be skipped</>}
+                {preview.unreadable.length > 0 && <> · {preview.unreadable.length} line{preview.unreadable.length === 1 ? "" : "s"} couldn&rsquo;t be read and will be left out</>}
+                <br />
+                Reading <strong>{Object.keys(preview.map).map(k => COLUMN_LABEL[k] + " from “" + String(preview.headers[preview.map[k]]).trim() + "”").join(", ")}</strong>.
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <MiniButton kind="save" onClick={doImport} disabled={busy === "import"}>
+                  {busy === "import" ? "Adding…" : "Add " + (preview.parsed.length - preview.alreadyHere) + " to the list"}
+                </MiniButton>
+                <MiniButton kind="cancel" onClick={() => setPreview(null)}>Cancel</MiniButton>
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
+
+      {list.length > 0 && (
+        <div style={{ display: "flex", gap: 26, flexWrap: "wrap", marginBottom: 18, fontFamily: FONT_BODY }}>
+          <div><div style={{ fontSize: 11, color: "#7C8C8A", fontWeight: 700, letterSpacing: ".1em" }}>IN</div><div style={{ fontFamily: FONT_DISPLAY, fontSize: 22, color: "#0E7A5F" }}>{fmt(Math.round(moneyIn))}</div></div>
+          <div><div style={{ fontSize: 11, color: "#7C8C8A", fontWeight: 700, letterSpacing: ".1em" }}>OUT</div><div style={{ fontFamily: FONT_DISPLAY, fontSize: 22, color: "#B5451B" }}>{fmt(Math.round(moneyOut))}</div></div>
+          <div><div style={{ fontSize: 11, color: "#7C8C8A", fontWeight: 700, letterSpacing: ".1em" }}>STILL TO EXPLAIN</div><div style={{ fontFamily: FONT_DISPLAY, fontSize: 22, color: needs.length ? CORAL : "#0E7A5F" }}>{needs.length}</div></div>
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 2, marginBottom: 16, borderBottom: "2px solid #EFE7DD" }}>
+        {TXN_TABS.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)} style={{
+            background: "none", border: "none", borderBottom: tab === t.id ? "2px solid " + TEAL : "2px solid transparent",
+            marginBottom: -2, padding: "10px 18px", fontSize: 13, fontFamily: FONT_BODY,
+            fontWeight: tab === t.id ? 600 : 400, color: tab === t.id ? TEAL : "#7C8C8A", cursor: "pointer",
+          }}>{t.label} ({counts[t.id]})</button>
+        ))}
+      </div>
+
+      {rows === null && !err && <div style={{ color: "#7C8C8A", fontFamily: FONT_BODY }}>Loading…</div>}
+      {rows !== null && shown.length === 0 && (
+        <Card style={{ padding: "30px 24px", textAlign: "center", color: "#9B8E80", fontFamily: FONT_BODY }}>
+          {list.length === 0 ? "Nothing uploaded yet." : tab === "todo" ? "Every line has a note on it. 🎉" : "Nothing here yet."}
+        </Card>
+      )}
+
+      {shown.length > 0 && (
+        <Card style={{ overflow: "hidden" }}>
+          {shown.map((r, i) => (
+            <TxnRow key={r.id} r={r} narrow={narrow} first={i === 0} readOnly={!signedIn} onSave={saveComment} />
+          ))}
+        </Card>
+      )}
+
+      {signedIn && files.length > 0 && (
+        <div style={{ marginTop: 22, fontSize: 12.5, color: "#7C8C8A", fontFamily: FONT_BODY }}>
+          <div style={{ fontWeight: 700, marginBottom: 6 }}>Uploaded so far</div>
+          {files.map(([name, n]) => (
+            <div key={name} style={{ marginBottom: 3 }}>
+              {name} — {n} line{n === 1 ? "" : "s"} ·{" "}
+              <button onClick={() => removeFile(name, n)} disabled={busy === "del"} style={subAction(true)}>remove this upload</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TxnRow({ r, narrow, first, readOnly, onSave }) {
+  const [text, setText] = useState(r.comment || "");
+  useEffect(() => { setText(r.comment || ""); }, [r.comment]);
+  const out = Number(r.amount) < 0;
+  return (
+    <div style={{
+      display: "grid",
+      gridTemplateColumns: narrow ? "1fr" : "96px minmax(0,1.5fr) 110px minmax(0,1.4fr)",
+      gap: narrow ? 6 : 14, alignItems: "center",
+      padding: narrow ? "14px 16px" : "12px 20px",
+      borderTop: first ? "none" : "1px solid #F3ECE3",
+    }}>
+      <div style={{ fontSize: 12.5, color: "#7C8C8A", fontFamily: FONT_BODY }}>{fmtCheckDate(r.txn_date)}</div>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 13.5, color: INK, fontFamily: FONT_BODY, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: narrow ? "normal" : "nowrap" }}>
+          {r.description || "—"}
+        </div>
+        {r.check_number && <div style={{ fontSize: 11.5, color: "#9B8E80", fontFamily: FONT_BODY }}>check {r.check_number}</div>}
+      </div>
+      <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 15, color: out ? "#B5451B" : "#0E7A5F", textAlign: narrow ? "left" : "right" }}>
+        {out ? "−" : "+"}{fmtCents(Math.abs(Number(r.amount)))}
+      </div>
+      <div>
+        {readOnly ? (
+          <div style={{ fontSize: 13, color: r.comment ? INK : "#C8BBA8", fontFamily: FONT_BODY }}>{r.comment || "no note"}</div>
+        ) : (
+          <input
+            value={text}
+            onChange={e => setText(e.target.value)}
+            onBlur={() => onSave(r, text.trim())}
+            onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
+            placeholder={r.match_note ? r.match_note : "What was this for?"}
+            style={{
+              width: "100%", border: "1px solid " + (text ? "#EFE7DD" : "#E8C9B8"), borderRadius: 8,
+              padding: "7px 10px", fontSize: 13, fontFamily: FONT_BODY, color: INK,
+              background: text ? "#fff" : "#FFF9F4", outline: "none",
+            }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
 const VIEW_PATHS = {
   pulse: "/", investments: "/investments", grants: "/grants", contributions: "/contributions",
-  grantees: "/grantees", queue: "/review", "request-grant": "/recommend-grant", contribute: "/contribute", access: "/access",
+  grantees: "/grantees", transactions: "/transactions", queue: "/review", "request-grant": "/recommend-grant", contribute: "/contribute", access: "/access",
 };
 const VIEW_TITLES = {
-  investments: "Investments", grants: "Grants Made", contributions: "Contributions", grantees: "Grantees",
+  investments: "Investments", grants: "Grants Made", contributions: "Contributions", grantees: "Grantees", transactions: "Transactions",
   queue: "Review", "request-grant": "Recommend a Grant", contribute: "Make a Contribution", access: "Access",
 };
 const LEGACY_HASHES = { "#request-grant": "request-grant", "#contribute": "contribute", "#review": "queue", "#queue": "queue" };
@@ -4329,6 +4714,7 @@ export default function App() {
             {current === "grants"         && <GrantsView narrow={narrow} />}
             {current === "contributions"  && <ContributionsView narrow={narrow} />}
             {current === "grantees"       && <GranteesDirectory goGrantee={goGrantee} narrow={narrow} />}
+            {current === "transactions"   && <TransactionsView narrow={narrow} />}
             {current === "grantee-detail" && <GranteeDetail org={detailOrg} setView={nav} goGrantee={goGrantee} narrow={narrow} />}
             {current === "request-grant"  && <RequestGrantForm narrow={narrow} setView={nav} />}
             {current === "contribute"     && <ContributionForm narrow={narrow} setView={nav} />}
