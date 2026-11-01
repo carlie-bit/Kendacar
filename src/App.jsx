@@ -141,6 +141,8 @@ async function authedWrite(session, setSession, method, path, body, prefer) {
     if (r) { setSession(r); saveSession(r); res = await doReq(r.access_token); }
   }
   if (!res.ok) throw new Error("Save failed (" + res.status + "). " + (await res.text().catch(() => "")));
+  // A caller that asked for the row back wants its new id, not just success.
+  if (prefer && prefer.includes("return=representation")) return res.json().catch(() => null);
   return true;
 }
 
@@ -251,6 +253,70 @@ async function signedDocUrl(session, setSession, path) {
   if (!res.ok) throw new Error("Couldn't build a link (" + res.status + ").");
   const j = await res.json();
   return SUPABASE_URL + "/storage/v1" + j.signedURL;
+}
+
+// ---- paperwork behind a grant recommendation ----
+// Either an uploaded file (private, opened through a short-lived signed link) or
+// a pasted link to a folder someone keeps elsewhere, usually Google Drive.
+const ATT_ACCEPT = ".pdf,.png,.jpg,.jpeg,.heic,.heif,.webp,.gif,.doc,.docx,.txt";
+const ATT_SELECT = "select=id,request_id,kind,storage_path,url,filename,content_type,uploaded_at&order=uploaded_at";
+const ATT_MAX_MB = 25;
+
+// Tidy a pasted link. Returns "" if it isn't one, so the form can say so.
+function cleanLink(raw) {
+  const t = String(raw || "").trim();
+  if (!t) return "";
+  // Turn down a scheme we don't serve (javascript:, data:, file:) rather than
+  // prefixing https:// and quietly producing a link to a nonsense host. A colon
+  // followed by digits is a port, not a scheme, so example.org:8080 still works.
+  const scheme = t.match(/^([a-z][a-z0-9+.-]*):(?!\d)/i);
+  if (scheme && !/^https?$/i.test(scheme[1])) return "";
+  const withScheme = /^https?:\/\//i.test(t) ? t : "https://" + t.replace(/^\/+/, "");
+  try {
+    const u = new URL(withScheme);
+    return u.protocol === "https:" || u.protocol === "http:" ? u.href : "";
+  } catch { return ""; }
+}
+
+// What to call a link in a list: where it points, rather than the whole address.
+function linkLabel(url) {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, "");
+    if (host === "drive.google.com") return "Google Drive";
+    if (host === "docs.google.com") return "Google Docs";
+    if (host === "dropbox.com" || host.endsWith(".dropbox.com")) return "Dropbox";
+    return host;
+  } catch { return "Link"; }
+}
+
+// Upload one file against a request that already exists, and file the row.
+async function attachRequestFile(session, setSession, requestId, file, who) {
+  const safe = file.name.replace(/[^A-Za-z0-9._-]+/g, "_").slice(-60);
+  const path = "requests/" + requestId + "/" + Date.now() + "_" + Math.random().toString(36).slice(2, 7) + "_" + safe;
+  await uploadPrivateDoc(session, setSession, path, file);
+  await authedWrite(session, setSession, "POST", "request_attachments", {
+    request_id: requestId, kind: "file", storage_path: path,
+    filename: file.name, content_type: file.type || null, uploaded_by: who || null,
+  });
+}
+
+async function attachRequestLink(session, setSession, requestId, url, who) {
+  await authedWrite(session, setSession, "POST", "request_attachments", {
+    request_id: requestId, kind: "link", url, filename: linkLabel(url), uploaded_by: who || null,
+  });
+}
+
+// File everything a form staged, now that the request has an id. Returns the
+// names of anything that wouldn't go, so the person hears about it.
+async function saveStagedAttachments(session, setSession, requestId, staged, who) {
+  const failed = [];
+  for (const a of staged) {
+    try {
+      if (a.kind === "link") await attachRequestLink(session, setSession, requestId, a.url, who);
+      else await attachRequestFile(session, setSession, requestId, a.file, who);
+    } catch { failed.push(a.kind === "link" ? a.filename || a.url : a.file.name); }
+  }
+  return failed;
 }
 
 // Is this attachment an image? Handles both legacy bare-URL strings and {url,name,type} objects.
@@ -3455,6 +3521,29 @@ const formInput = {
   fontSize: 15, fontFamily: FONT_BODY, color: INK, background: "#fff", outline: "none",
 };
 
+// A quiet button for inside a form. Always type="button" — a bare <button> in a
+// form submits it.
+const attBtn = {
+  background: "#FBF4EC", color: TEAL, border: "1px solid " + LINE, borderRadius: 10,
+  padding: "10px 16px", fontSize: 13.5, fontWeight: 700, fontFamily: FONT_BODY,
+  cursor: "pointer", whiteSpace: "nowrap",
+};
+
+// One line of attached paperwork, in a form or on the review page.
+function AttRow({ kind, label, note, onOpen, onRemove, busy }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "1px solid #F3ECE3" }}>
+      <span style={{ fontSize: 13 }} aria-hidden="true">{kind === "link" ? "🔗" : "📄"}</span>
+      <div style={{ minWidth: 0, flex: 1, fontFamily: FONT_BODY }}>
+        <div style={{ fontSize: 13.5, color: INK, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</div>
+        {note && <div style={{ fontSize: 11.5, color: "#9B8E80", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{note}</div>}
+      </div>
+      {onOpen && <button type="button" onClick={onOpen} disabled={busy} style={subAction(false)}>Open</button>}
+      {onRemove && <button type="button" onClick={onRemove} disabled={busy} style={subAction(true)}>Remove</button>}
+    </div>
+  );
+}
+
 function FormShell({ title, accent, lead, narrow, setView, children, done, doneMsg }) {
   return (
     <div style={{ maxWidth: 620, margin: "0 auto", padding: narrow ? "28px 16px 60px" : "44px 40px 80px" }}>
@@ -3498,20 +3587,51 @@ function RequestGrantForm({ narrow, setView }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [done, setDone] = useState(false);
+  // Paperwork waits here until the request is saved and has an id to hang off.
+  const [atts, setAtts] = useState([]);
+  const [link, setLink] = useState("");
+  const [attErr, setAttErr] = useState("");
+  const [warn, setWarn] = useState("");
+  const fileRef = useRef(null);
 
   const solicited = source === "solicited";
+
+  function addLink() {
+    const url = cleanLink(link);
+    if (!url) { setAttErr("That doesn't look like a link — try pasting the whole address."); return; }
+    setAtts(a => [...a, { key: "l" + Date.now() + Math.random(), kind: "link", url, filename: linkLabel(url) }]);
+    setLink(""); setAttErr("");
+  }
+
+  function addFiles(e) {
+    const picked = Array.from(e.target.files || []);
+    e.target.value = "";
+    const big = picked.filter(f => f.size > ATT_MAX_MB * 1024 * 1024);
+    const ok = picked.filter(f => f.size <= ATT_MAX_MB * 1024 * 1024);
+    setAtts(a => [...a, ...ok.map(f => ({ key: "f" + f.name + f.size + Math.random(), kind: "file", file: f }))]);
+    setAttErr(big.length
+      ? big.map(f => f.name).join(", ") + " — too big to upload (" + ATT_MAX_MB + "MB each). Put it in Drive and paste the link instead."
+      : "");
+  }
 
   async function submit(e) {
     e.preventDefault();
     if (!org.trim() || !requestedBy.trim()) { setErr("Please add the organization and your name."); return; }
     setBusy(true); setErr("");
     try {
-      await authedWrite(session, setSession, "POST", "grant_requests", {
+      const saved = await authedWrite(session, setSession, "POST", "grant_requests", {
         org: org.trim(), requested_by: requestedBy.trim(), source,
         requester_email: email.trim() || null,
         amount: amount === "" ? null : Number(amount),
         category: category || null, notes: notes.trim() || null,
-      });
+      }, atts.length ? "return=representation" : undefined);
+      if (atts.length) {
+        const id = Array.isArray(saved) && saved[0] ? saved[0].id : null;
+        const failed = id
+          ? await saveStagedAttachments(session, setSession, id, atts, requestedBy.trim())
+          : atts.map(a => (a.kind === "link" ? a.filename || a.url : a.file.name));
+        if (failed.length) setWarn("One thing: " + failed.join(", ") + " didn't attach, so a trustee will need to add it on the Review page.");
+      }
       setDone(true);
     } catch (e2) { setErr(e2.message); setBusy(false); }
   }
@@ -3521,9 +3641,10 @@ function RequestGrantForm({ narrow, setView }) {
       lead={solicited ? "pass it along" : "put one forward"}
       title={solicited ? "Log an outside request" : "Recommend a grant"}
       done={done}
-      doneMsg={solicited
+      doneMsg={(solicited
         ? "Logged as an outside request. The family will see that it came to us, not from you."
-        : "Your recommendation is in. A trustee will review it for the next giving cycle."}>
+        : "Your recommendation is in. A trustee will review it for the next giving cycle.")
+        + (warn ? " " + warn : "")}>
       <p style={{ fontFamily: FONT_BODY, fontSize: 15, color: "#6F7E7C", lineHeight: 1.6, marginBottom: 22 }}>
         {solicited
           ? "Somebody has asked Kendacar for money. Record what they want here — it reaches the family as a request from them, not a recommendation from you."
@@ -3576,9 +3697,37 @@ function RequestGrantForm({ narrow, setView }) {
             placeholder={solicited ? "What they do and what they have asked us for" : "What they do and why it matters"}
             style={{ ...formInput, resize: "vertical" }} />
         </FormField>
+        {/* Not a <FormField>: that wraps its children in a <label>, and a label
+            holding a file input hijacks the click. */}
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontFamily: FONT_BODY, fontWeight: 700, fontSize: 13, color: INK, marginBottom: 5 }}>Anything to attach?</div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "stretch" }}>
+            <input value={link} onChange={e => setLink(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addLink(); } }}
+              placeholder="Paste a Google Drive link" style={{ ...formInput, flex: "1 1 200px", width: "auto" }} />
+            <button type="button" onClick={addLink} style={attBtn}>Add link</button>
+            <button type="button" onClick={() => fileRef.current && fileRef.current.click()} style={attBtn}>Choose files…</button>
+          </div>
+          <input ref={fileRef} type="file" multiple accept={ATT_ACCEPT} onChange={addFiles} style={{ display: "none" }} />
+          <div style={{ fontSize: 12, color: "#9B8E80", marginTop: 4 }}>
+            Their proposal, a PDF, photos of what came in the post — or a link to the folder it all sits in.
+            Files stay private to the family. {ATT_MAX_MB}MB each.
+          </div>
+          {attErr && <div style={{ color: "#B5451B", fontSize: 12.5, marginTop: 6 }}>{attErr}</div>}
+          {atts.length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              {atts.map(a => (
+                <AttRow key={a.key} kind={a.kind}
+                  label={a.kind === "link" ? a.filename : a.file.name}
+                  note={a.kind === "link" ? a.url : Math.max(1, Math.round(a.file.size / 1024)) + " KB"}
+                  onRemove={() => setAtts(list => list.filter(x => x.key !== a.key))} />
+              ))}
+            </div>
+          )}
+        </div>
         {err && <div style={{ color: "#B5451B", fontSize: 13, marginBottom: 12 }}>{err}</div>}
         <button type="submit" disabled={busy} style={{ background: CORAL, color: "#fff", border: "none", borderRadius: 12, padding: "13px 26px", fontSize: 15, fontWeight: 700, fontFamily: FONT_BODY, cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }}>
-          {busy ? "Sending…" : solicited ? "Log this request" : "Submit recommendation"}
+          {busy ? (atts.length ? "Uploading…" : "Sending…") : solicited ? "Log this request" : "Submit recommendation"}
         </button>
       </form>
     </FormShell>
@@ -3879,11 +4028,115 @@ function VotePanel({ req, votes, onChange }) {
   );
 }
 
+// The paperwork behind a recommendation: a Drive link, their proposal, photos of
+// what arrived in the post. Files open through a short-lived signed link, so the
+// bucket itself stays private.
+function RequestPaperwork({ req, atts, onChange, readOnly }) {
+  const { session, setSession, email } = useAuth();
+  const [busy, setBusy] = useState(false);
+  const [link, setLink] = useState("");
+  const [showLink, setShowLink] = useState(false);
+  const [err, setErr] = useState("");
+  const fileRef = useRef(null);
+
+  async function pick(e) {
+    const picked = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!picked.length) return;
+    setBusy(true); setErr("");
+    try {
+      for (const f of picked) {
+        if (f.size > ATT_MAX_MB * 1024 * 1024) throw new Error(f.name + " is over " + ATT_MAX_MB + "MB — put it in Drive and paste the link instead.");
+        await attachRequestFile(session, setSession, req.id, f, email || null);
+      }
+      await onChange();
+    } catch (e2) { setErr(e2.message); }
+    finally { setBusy(false); }
+  }
+
+  async function addLink() {
+    const url = cleanLink(link);
+    if (!url) { setErr("That doesn't look like a link."); return; }
+    setBusy(true); setErr("");
+    try {
+      await attachRequestLink(session, setSession, req.id, url, email || null);
+      setLink(""); setShowLink(false);
+      await onChange();
+    } catch (e2) { setErr(e2.message); }
+    finally { setBusy(false); }
+  }
+
+  async function openAtt(a) {
+    if (a.kind === "link") { window.open(a.url, "_blank", "noopener"); return; }
+    setBusy(true); setErr("");
+    try { window.open(await signedDocUrl(session, setSession, a.storage_path), "_blank", "noopener"); }
+    catch (e2) { setErr(e2.message); }
+    finally { setBusy(false); }
+  }
+
+  async function remove(a) {
+    if (!window.confirm("Remove " + (a.filename || "this") + " from this recommendation?")) return;
+    setBusy(true); setErr("");
+    try {
+      // Storage first; if the file is already gone the row should still go.
+      if (a.kind === "file") {
+        try { await deletePrivateDoc(session, setSession, a.storage_path); } catch { /* row still goes */ }
+      }
+      await authedWrite(session, setSession, "DELETE", "request_attachments?id=eq." + a.id);
+      await onChange();
+    } catch (e2) { setErr(e2.message); }
+    finally { setBusy(false); }
+  }
+
+  if (readOnly && atts.length === 0) return null;
+
+  return (
+    <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px dashed " + LINE }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ fontFamily: FONT_BODY, fontWeight: 700, fontSize: 11.5, color: "#7C8C8A", letterSpacing: 0.4 }}>
+          PAPERWORK{atts.length ? " · " + atts.length : ""}
+        </div>
+        {!readOnly && (
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <input ref={fileRef} type="file" multiple accept={ATT_ACCEPT} onChange={pick} style={{ display: "none" }} />
+            <button onClick={() => fileRef.current && fileRef.current.click()} disabled={busy} style={subAction(false)}>
+              {busy ? "Working…" : "Add a file"}
+            </button>
+            <button onClick={() => setShowLink(v => !v)} disabled={busy} style={subAction(false)}>Add a link</button>
+          </div>
+        )}
+      </div>
+      {showLink && !readOnly && (
+        <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+          <input value={link} onChange={e => setLink(e.target.value)} autoFocus
+            onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addLink(); } }}
+            placeholder="Paste a Google Drive link"
+            style={{ ...formInput, flex: "1 1 220px", width: "auto", padding: "8px 11px", fontSize: 13.5 }} />
+          <MiniButton kind="save" onClick={addLink} disabled={busy}>Add</MiniButton>
+        </div>
+      )}
+      {err && <div style={{ color: "#B5451B", fontSize: 12.5, marginTop: 6 }}>{err}</div>}
+      {atts.length === 0
+        ? <div style={{ fontSize: 12.5, color: "#C8BBA8", fontFamily: FONT_BODY, marginTop: 6 }}>Nothing attached yet.</div>
+        : <div style={{ marginTop: 4 }}>
+            {atts.map(a => (
+              <AttRow key={a.id} kind={a.kind} busy={busy}
+                label={a.filename || (a.kind === "link" ? a.url : "Document")}
+                note={a.kind === "link" ? a.url : fmtDate(a.uploaded_at)}
+                onOpen={() => openAtt(a)}
+                onRemove={readOnly ? undefined : () => remove(a)} />
+            ))}
+          </div>}
+    </div>
+  );
+}
+
 function ProcessingQueue({ narrow, setView, onChange }) {
   const { session, setSession } = useAuth();
   const { granteeNotes } = useData();
   const [items, setItems] = useState(null);
   const [votes, setVotes] = useState([]);
+  const [atts, setAtts] = useState([]);
   const [err, setErr] = useState("");
   const [openId, setOpenId] = useState(null);
   const [tab, setTab] = useState("new");
@@ -3896,11 +4149,12 @@ function ProcessingQueue({ narrow, setView, onChange }) {
   async function load() {
     try {
       // Pull every submission, not just the waiting ones — the processed history lives here too.
-      const [reqs, votes] = await Promise.all([
+      const [reqs, votes, attRows] = await Promise.all([
         authedGet(session, setSession, "grant_requests?order=created_at.desc&select=id,org,amount,requested_by,requester_email,category,notes,created_at,status,check_number,check_date,processed_at,source,vote_state,vote_note"),
         authedGet(session, setSession, "grant_votes?select=id,request_id,voter_email,voter_name,choice,voted_at,sent_at&order=voter_name"),
+        authedGet(session, setSession, "request_attachments?" + ATT_SELECT),
       ]);
-      setItems(reqs); setVotes(votes || []);
+      setItems(reqs); setVotes(votes || []); setAtts(attRows || []);
       onChange && onChange();
     } catch (e) { setErr(e.message); }
   }
@@ -3982,6 +4236,8 @@ function ProcessingQueue({ narrow, setView, onChange }) {
                 <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 24, color: TEAL }}>{r.amount != null ? fmt(r.amount) : "—"}</div>
               </div>
             </div>
+            <RequestPaperwork req={r} atts={atts.filter(a => a.request_id === r.id)}
+              onChange={load} readOnly={r.status !== "new"} />
             {r.status === "new" && <VotePanel req={r} votes={votes.filter(v => v.request_id === r.id)} onChange={load} />}
             {r.status === "new" && (openId === r.id ? (
               <MarkSentRow req={r} onDone={after} />
