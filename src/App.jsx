@@ -579,8 +579,8 @@ const CustomTooltip = ({ active, payload, label }) => {
   );
 };
 
-function Card({ children, style }) {
-  return <div style={{ background: "#fff", border: "1px solid #EFE7DD", borderRadius: 18, ...style }}>{children}</div>;
+function Card({ children, style, id }) {
+  return <div id={id} style={{ background: "#fff", border: "1px solid #EFE7DD", borderRadius: 18, ...style }}>{children}</div>;
 }
 
 function SectionTitle({ title, sub }) {
@@ -4140,6 +4140,12 @@ function ProcessingQueue({ narrow, setView, onChange }) {
   const [err, setErr] = useState("");
   const [openId, setOpenId] = useState(null);
   const [tab, setTab] = useState("new");
+  // The confirmation email links to /review#r12. Open on that card, not the list.
+  const [linkedId, setLinkedId] = useState(() => {
+    const m = String((typeof window !== "undefined" && window.location && window.location.hash) || "").match(/^#r(\d+)$/);
+    return m ? Number(m[1]) : null;
+  });
+  const [flashId, setFlashId] = useState(null);
 
   async function setSource(r, next) {
     try { await authedWrite(session, setSession, "PATCH", "grant_requests?id=eq." + r.id, { source: next }); load(); }
@@ -4159,6 +4165,27 @@ function ProcessingQueue({ narrow, setView, onChange }) {
     } catch (e) { setErr(e.message); }
   }
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+
+  // Runs again after setTab, by which point the card is actually on the page.
+  useEffect(() => {
+    if (linkedId == null || !items) return;
+    const row = items.find(r => r.id === linkedId);
+    if (!row) { setLinkedId(null); return; }
+    if (row.status !== tab) { setTab(row.status); return; }
+    const el = document.getElementById("req-" + row.id);
+    setLinkedId(null);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    setFlashId(row.id);
+    // Drop the #r12 so a refresh doesn't jump again.
+    history.replaceState(null, "", window.location.pathname);
+  }, [items, tab, linkedId]);
+
+  useEffect(() => {
+    if (flashId == null) return;
+    const t = setTimeout(() => setFlashId(null), 2600);
+    return () => clearTimeout(t);
+  }, [flashId]);
 
   async function dismiss(id) {
     if (!window.confirm("Dismiss this recommendation? It won't be processed.")) return;
@@ -4207,7 +4234,12 @@ function ProcessingQueue({ narrow, setView, onChange }) {
 
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         {shown.map(r => (
-          <Card key={r.id} style={{ padding: narrow ? "18px" : "20px 24px", borderLeft: "4px solid " + (r.status === "sent" ? "#1F9E6E" : r.status === "declined" ? "#C8BBA8" : CORAL) }}>
+          <Card key={r.id} id={"req-" + r.id} style={{
+            padding: narrow ? "18px" : "20px 24px",
+            borderLeft: "4px solid " + (r.status === "sent" ? "#1F9E6E" : r.status === "declined" ? "#C8BBA8" : CORAL),
+            boxShadow: flashId === r.id ? "0 0 0 3px " + SUN : "none",
+            transition: "box-shadow .5s ease",
+          }}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "flex-start" }}>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 18, color: INK }}>{orgLabel(r.org, granteeNotes)}</div>
