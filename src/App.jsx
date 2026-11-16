@@ -2940,6 +2940,15 @@ function TaxFolderLink({ year, url, onChange, compact, readOnly }) {
   );
 }
 
+// A waiting recommendation has no grant row yet, but the letter goes in the
+// envelope with the check — so it has to be writable before one exists.
+const letterGrant = r => ({
+  org: r.org,
+  amount: r.amount,
+  year: Number(String(r.check_date || new Date().toISOString().slice(0, 10)).slice(0, 4)),
+  checkDate: r.check_date || null,
+});
+
 // Small button that generates the cover letter for one grant.
 function GrantLetterButton({ grant, signer }) {
   const { granteeNotes } = useData();
@@ -4132,7 +4141,7 @@ function RequestPaperwork({ req, atts, onChange, readOnly }) {
 }
 
 function ProcessingQueue({ narrow, setView, onChange }) {
-  const { session, setSession } = useAuth();
+  const { session, setSession, email } = useAuth();
   const { granteeNotes } = useData();
   const [items, setItems] = useState(null);
   const [votes, setVotes] = useState([]);
@@ -4274,16 +4283,22 @@ function ProcessingQueue({ narrow, setView, onChange }) {
             {r.status === "new" && (openId === r.id ? (
               <MarkSentRow req={r} onDone={after} />
             ) : (
-              <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+              <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+                <GrantLetterButton grant={letterGrant(r)} signer={defaultSigner(email)} />
                 <MiniButton kind="save" onClick={() => setOpenId(r.id)}>Mark sent →</MiniButton>
                 <MiniButton kind="delete" onClick={() => dismiss(r.id)}>Dismiss</MiniButton>
               </div>
             ))}
             {r.status === "sent" && (
               <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px dashed " + LINE, fontSize: 12.5, color: "#5E6E6C", fontFamily: FONT_BODY }}>
-                Sent{r.check_date ? " " + fmtCheckDate(r.check_date) : ""}
-                {r.check_number ? " · check #" + r.check_number : ""}
-                {r.processed_at ? " · recorded " + fmtDate(r.processed_at) : ""}
+                <div>
+                  Sent{r.check_date ? " " + fmtCheckDate(r.check_date) : ""}
+                  {r.check_number ? " · check #" + r.check_number : ""}
+                  {r.processed_at ? " · recorded " + fmtDate(r.processed_at) : ""}
+                </div>
+                <div style={{ marginTop: 10 }}>
+                  <GrantLetterButton grant={letterGrant(r)} signer={defaultSigner(email)} />
+                </div>
               </div>
             )}
             {r.status === "declined" && (
