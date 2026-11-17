@@ -499,6 +499,13 @@ const CAT_COLORS = {
 };
 
 const fmt  = n => "$" + Number(n).toLocaleString();
+// Today where the user is, not in UTC. toISOString() rolls over to tomorrow at 6pm
+// Central, which would date a letter or a check the day after it was actually written.
+const todayISO = () => {
+  const d = new Date();
+  const p = n => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+};
 const fmtK = n => n >= 1000000 ? "$" + (n/1000000).toFixed(1) + "M" : n >= 1000 ? "$" + Math.round(n/1000) + "k" : "$" + n;
 
 // Normalize grantee display names so the same org doesn't split into two rows
@@ -2627,6 +2634,14 @@ const fmtLetterDate = s => {
 // The foundation name ends in "Inc." — avoid doubling the period when it closes a sentence.
 const endSentence = t => (/[.!?]$/.test(t) ? t : t + ".");
 
+// "Dear Jen Moore," reads better than "Dear Youth Guidance of Indian River County, Inc.,"
+// A contact may carry its own title ("Becky Morris, Executive Director") — that belongs on
+// the Attn: line, not in the greeting, so take only what comes before the comma.
+const salutationName = (contact, orgName) => {
+  const who = String(contact || "").split(",")[0].trim();
+  return who || orgName;
+};
+
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -2646,7 +2661,7 @@ async function generateGrantLetter({ grant, note, signer }) {
   // Fall back to the foundation's standing contact if this signer has none on file.
   const c = (signer.phone || signer.email) ? signer : SIGNERS[0];
   const reach = [c.phone, c.email].filter(Boolean).join(" or ");
-  const dated = grant.checkDate || new Date().toISOString().slice(0, 10);
+  const dated = grant.checkDate || todayISO();
 
   const kids = [];
   kids.push(C(FOUNDATION.name));
@@ -2658,7 +2673,7 @@ async function generateGrantLetter({ grant, note, signer }) {
   if (note && note.contact) kids.push(P("Attn: " + note.contact));
   addrLines.forEach(l => kids.push(P(l)));
   kids.push(P(""));
-  kids.push(P("Dear " + orgName + ","));
+  kids.push(P("Dear " + salutationName(note && note.contact, orgName) + ","));
   kids.push(P(""));
   kids.push(P("Please see the enclosed donation of " + fmt(grant.amount) + " from " + endSentence(FOUNDATION.name) +
     "  We are happy to support your organization, knowing that it is such an important part of our community."));
@@ -2894,7 +2909,7 @@ function GiftReceiptButton({ gift, signer, onDone }) {
   async function go() {
     setBusy(true);
     try {
-      const when = gift.receiptDate || new Date().toISOString().slice(0, 10);
+      const when = gift.receiptDate || todayISO();
       await generateDonorReceipt({ gift, signer: signer || SIGNERS[0], receiptDate: when });
       if (!gift.receiptDate) {
         await authedWrite(session, setSession, "PATCH", "contribution_gifts?id=eq." + gift.id, { receipt_date: when });
@@ -2945,7 +2960,7 @@ function TaxFolderLink({ year, url, onChange, compact, readOnly }) {
 const letterGrant = r => ({
   org: r.org,
   amount: r.amount,
-  year: Number(String(r.check_date || new Date().toISOString().slice(0, 10)).slice(0, 4)),
+  year: Number(String(r.check_date || todayISO()).slice(0, 4)),
   checkDate: r.check_date || null,
 });
 
@@ -3155,7 +3170,7 @@ function DueDiligenceEditor({ org, note, onDone }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const set = (k, v) => setF({ ...f, [k]: v });
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayISO();
 
   async function save() {
     setBusy(true); setErr("");
@@ -3747,7 +3762,7 @@ function ContributionForm({ narrow, setView }) {
   const { signedIn, session, setSession } = useAuth();
   const { refresh } = useData();
   const [donor, setDonor] = useState("");
-  const [giftDate, setGiftDate] = useState(new Date().toISOString().slice(0, 10));
+  const [giftDate, setGiftDate] = useState(todayISO());
   const [amount, setAmount] = useState("");
   const [giftType, setGiftType] = useState("cash");
   const [rows, setRows] = useState([{ symbol: "", quantity: "", market_value: "" }]);
@@ -3859,7 +3874,7 @@ function MarkSentRow({ req, onDone }) {
   const fileGaps = !fileNote
     ? ["no grantee file yet (legal name, EIN and IRS status aren't recorded)"]
     : diligenceFor(fileNote, (granteeDocs || {})[fileKey]).missing.map(i => i.label + (i.ideal ? " (ideal to have)" : ""));
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayISO();
   const [amount, setAmount] = useState(req.amount != null ? req.amount : "");
   const [date, setDate] = useState(today);
   const [checkNo, setCheckNo] = useState("");
@@ -4149,6 +4164,7 @@ function ProcessingQueue({ narrow, setView, onChange }) {
   const [err, setErr] = useState("");
   const [openId, setOpenId] = useState(null);
   const [tab, setTab] = useState("new");
+  const [signerIdx, setSignerIdx] = useState(0);   // who signs the cover letters
   // The confirmation email links to /review#r12. Open on that card, not the list.
   const [linkedId, setLinkedId] = useState(() => {
     const m = String((typeof window !== "undefined" && window.location && window.location.hash) || "").match(/^#r(\d+)$/);
@@ -4174,6 +4190,9 @@ function ProcessingQueue({ narrow, setView, onChange }) {
     } catch (e) { setErr(e.message); }
   }
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+
+  // Default the signature to whoever is signed in, so letters go out in their own name.
+  useEffect(() => { setSignerIdx(Math.max(0, SIGNERS.indexOf(defaultSigner(email)))); }, [email]);
 
   // Runs again after setTab, by which point the card is actually on the page.
   useEffect(() => {
@@ -4225,6 +4244,21 @@ function ProcessingQueue({ narrow, setView, onChange }) {
 
       {err && <div style={{ color: "#B5451B", fontSize: 13, marginBottom: 12 }}>{err}</div>}
       {items === null && !err && <div style={{ color: "#7C8C8A", fontFamily: FONT_BODY }}>Loading…</div>}
+
+      {/* One signature for every letter on this page, the same control the grants table has. */}
+      {tab !== "declined" && (
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+          <label style={{ fontSize: 12, color: "#7C8C8A", fontFamily: FONT_BODY, display: "inline-flex", alignItems: "center", gap: 6 }}>
+            Letters signed by
+            <select value={signerIdx} onChange={e => setSignerIdx(Number(e.target.value))} style={{
+              fontFamily: FONT_BODY, fontSize: 12, padding: "5px 8px", borderRadius: 6,
+              border: "1px solid #E2D7C9", background: "#fff", color: INK, cursor: "pointer",
+            }}>
+              {SIGNERS.map((sg, i) => <option key={sg.name} value={i}>{sg.name} — {sg.title}</option>)}
+            </select>
+          </label>
+        </div>
+      )}
 
       {/* Status tabs — the processed history is here, not just what's waiting. */}
       <div style={{ display: "flex", gap: 2, marginBottom: 20, borderBottom: "2px solid #EFE7DD" }}>
@@ -4284,7 +4318,7 @@ function ProcessingQueue({ narrow, setView, onChange }) {
               <MarkSentRow req={r} onDone={after} />
             ) : (
               <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
-                <GrantLetterButton grant={letterGrant(r)} signer={defaultSigner(email)} />
+                <GrantLetterButton grant={letterGrant(r)} signer={SIGNERS[signerIdx]} />
                 <MiniButton kind="save" onClick={() => setOpenId(r.id)}>Mark sent →</MiniButton>
                 <MiniButton kind="delete" onClick={() => dismiss(r.id)}>Dismiss</MiniButton>
               </div>
@@ -4297,7 +4331,7 @@ function ProcessingQueue({ narrow, setView, onChange }) {
                   {r.processed_at ? " · recorded " + fmtDate(r.processed_at) : ""}
                 </div>
                 <div style={{ marginTop: 10 }}>
-                  <GrantLetterButton grant={letterGrant(r)} signer={defaultSigner(email)} />
+                  <GrantLetterButton grant={letterGrant(r)} signer={SIGNERS[signerIdx]} />
                 </div>
               </div>
             )}
