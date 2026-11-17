@@ -1888,6 +1888,7 @@ function ContributionsView({ narrow }) {
   const { donations, contributionGifts, refresh } = useData();
   const { signedIn, member, email, session, setSession } = useAuth();
   const [signerIdx, setSignerIdx] = useState(0);   // who signs the receipts
+  const [editGift, setEditGift] = useState(null);  // gift whose receipt details are open
   const [editId, setEditId] = useState(null);
   const [openYear, setOpenYear] = useState(null);
   const totalReceived = sumAmount(donations);
@@ -2057,10 +2058,27 @@ function ContributionsView({ narrow }) {
                                 ? <span style={{ color: "#1F9E6E", fontWeight: 700 }}>receipted {fmtCheckDate(g.receiptDate)}</span>
                                 : <span style={{ color: CORAL, fontWeight: 700 }}>no receipt yet</span>}
                               {signedIn && <GiftReceiptButton gift={g} signer={SIGNERS[signerIdx]} onDone={async () => { await refresh(); await loadGiftDocs(); }} />}
+                              {signedIn && (() => {
+                                const has = g.donorGreeting || g.donorFormal || g.donorAddress;
+                                return (
+                                  <button onClick={() => setEditGift(editGift === g.id ? null : g.id)}
+                                    style={{ ...subAction(false), color: has ? "#7C8C8A" : CORAL, fontWeight: has ? 400 : 700 }}
+                                    title="The name, greeting and mailing address this donor's receipt uses">
+                                    {editGift === g.id ? "Close" : has ? "Receipt details" : "Add receipt details"}
+                                  </button>
+                                );
+                              })()}
                               {member && <GiftDocButton gift={g} docs={giftDocs[g.id]} onChange={loadGiftDocs} readOnly={!signedIn} />}
                             </span>
                           </td>
                         </tr>
+                        {signedIn && editGift === g.id && (
+                          <tr style={{ background: "#FBF4EC", borderBottom: "1px solid #F3ECE3" }}>
+                            <td colSpan={5} style={{ padding: "4px 16px 14px 32px" }}>
+                              <GiftReceiptFields gift={g} onDone={() => setEditGift(null)} />
+                            </td>
+                          </tr>
+                        )}
                       </Fragment>
                     );
                   })}
@@ -2773,6 +2791,65 @@ const subAction = danger => ({
   textDecoration: "underline", whiteSpace: "nowrap",
 });
 
+// The three fields the donor receipt needs, which the gift itself doesn't carry.
+// Recorded per gift rather than per donor, since a donor's address can change
+// between one year's gift and the next.
+function GiftReceiptFields({ gift, onDone }) {
+  const { session, setSession } = useAuth();
+  const { refresh } = useData();
+  const [formal, setFormal] = useState(gift.donorFormal || "");
+  const [greeting, setGreeting] = useState(gift.donorGreeting || "");
+  const [address, setAddress] = useState(gift.donorAddress || "");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function save() {
+    setBusy(true); setErr("");
+    try {
+      await authedWrite(session, setSession, "PATCH", "contribution_gifts?id=eq." + gift.id, {
+        donor_formal: formal.trim() || null,
+        donor_greeting: greeting.trim() || null,
+        donor_address: address.trim() || null,
+      });
+      await refresh();
+      onDone();
+    } catch (e) { setErr(e.message); setBusy(false); }
+  }
+
+  const L = ({ label, hint, children }) => (
+    <div style={{ marginBottom: 8 }}>
+      <div style={{ fontSize: 11, color: "#7C8C8A", fontFamily: FONT_BODY, marginBottom: 3 }}>
+        {label}{hint ? <span style={{ color: "#C8BBA8" }}> — {hint}</span> : null}
+      </div>
+      {children}
+    </div>
+  );
+
+  return (
+    <div style={{ background: "#F0FAFA", border: "1px solid #D6EDEC", borderRadius: 10, padding: "12px 14px", maxWidth: 440 }}>
+      <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 13.5, color: INK, marginBottom: 8 }}>
+        Receipt details for this gift
+      </div>
+      <L label="Addressed to" hint="e.g. Mr. &amp; Mrs. David P. Smith, Jr.">
+        <EdInput value={formal} onChange={setFormal} placeholder="Name on the envelope" />
+      </L>
+      <L label="Greeting" hint="goes after &ldquo;Dear&rdquo;">
+        <EdInput value={greeting} onChange={setGreeting} placeholder="e.g. Mr. &amp; Mrs. Smith" />
+      </L>
+      <L label="Mailing address" hint="one line per line">
+        <textarea value={address} onChange={e => setAddress(e.target.value)} rows={3}
+          placeholder={"161 Anchor Dr.\nVero Beach, FL   32963"}
+          style={{ ...inputStyle, resize: "vertical", fontFamily: FONT_BODY }} />
+      </L>
+      <div style={{ display: "flex", gap: 6, marginTop: 4, flexWrap: "wrap" }}>
+        <MiniButton kind="save" onClick={save} disabled={busy}>{busy ? "…" : "Save"}</MiniButton>
+        <MiniButton kind="cancel" onClick={onDone} disabled={busy}>Cancel</MiniButton>
+      </div>
+      {err && <div style={{ color: "#B5451B", fontSize: 11.5, marginTop: 6 }}>{err}</div>}
+    </div>
+  );
+}
+
 // Upload or open the receipt filed against a gift.
 function GiftDocButton({ gift, docs, onChange, readOnly }) {
   const { session, setSession } = useAuth();
@@ -2907,6 +2984,15 @@ function GiftReceiptButton({ gift, signer, onDone }) {
   const { session, setSession } = useAuth();
   const [busy, setBusy] = useState(false);
   async function go() {
+    // Without these the receipt greets the donor by whatever informal label was typed
+    // on the gift, and carries no address block at all — easy to miss until it is printed.
+    const gaps = [];
+    if (!gift.donorFormal) gaps.push("the name it should be addressed to");
+    if (!gift.donorGreeting) gaps.push("how to greet them");
+    if (!gift.donorAddress) gaps.push("their mailing address");
+    if (gaps.length && !window.confirm("This gift has no " + gaps.join(", no ") +
+      " on record.\n\nThe receipt will be built from \u201c" + gift.donor +
+      "\u201d instead. Use \u201cReceipt details\u201d on this gift to fill them in.\n\nBuild it anyway?")) return;
     setBusy(true);
     try {
       const when = gift.receiptDate || todayISO();
@@ -3767,6 +3853,11 @@ function ContributionForm({ narrow, setView }) {
   const [giftType, setGiftType] = useState("cash");
   const [rows, setRows] = useState([{ symbol: "", quantity: "", market_value: "" }]);
   const [note, setNote] = useState("");
+  // What the donor's receipt needs beyond the gift itself. Optional here, but asked for
+  // up front so the receipt doesn't have to be chased down later.
+  const [formal, setFormal] = useState("");
+  const [greeting, setGreeting] = useState("");
+  const [address, setAddress] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [done, setDone] = useState(false);
@@ -3790,6 +3881,9 @@ function ContributionForm({ narrow, setView }) {
           gift_date: giftDate, donor: donor.trim(), amount: finalAmount, gift_type: giftType,
           securities: isSec ? secRows.map(r => ({ symbol: r.symbol.trim().toUpperCase(), quantity: Number(r.quantity) || null, market_value: Number(r.market_value) || 0 })) : [],
           note: note.trim() || null,
+          donor_formal: formal.trim() || null,
+          donor_greeting: greeting.trim() || null,
+          donor_address: address.trim() || null,
         });
         await refresh();
       } else {
@@ -3852,6 +3946,26 @@ function ContributionForm({ narrow, setView }) {
         <FormField label="Note" hint="Optional">
           <textarea value={note} onChange={e => setNote(e.target.value)} rows={3} placeholder="Anything to add" style={{ ...formInput, resize: "vertical" }} />
         </FormField>
+        {signedIn && (
+          <>
+            <div style={{ borderTop: "1px solid " + LINE, margin: "26px 0 18px", paddingTop: 18 }}>
+              <div style={{ fontFamily: FONT_DISPLAY, fontWeight: 600, fontSize: 15, color: INK }}>For the donor&rsquo;s receipt</div>
+              <div style={{ fontFamily: FONT_BODY, fontSize: 13, color: "#9B8E80", marginTop: 3 }}>
+                All optional &mdash; but the receipt is addressed and greeted from these, so filling them in now saves doing it later.
+              </div>
+            </div>
+            <FormField label="Addressed to" hint="e.g. Mr. &amp; Mrs. David P. Smith, Jr.">
+              <input value={formal} onChange={e => setFormal(e.target.value)} placeholder="Name on the envelope" style={formInput} />
+            </FormField>
+            <FormField label="Greeting" hint="goes after &ldquo;Dear&rdquo; &mdash; e.g. Mr. &amp; Mrs. Smith">
+              <input value={greeting} onChange={e => setGreeting(e.target.value)} placeholder="How to greet them" style={formInput} />
+            </FormField>
+            <FormField label="Mailing address" hint="One line per line">
+              <textarea value={address} onChange={e => setAddress(e.target.value)} rows={3}
+                placeholder={"161 Anchor Dr.\nVero Beach, FL   32963"} style={{ ...formInput, resize: "vertical" }} />
+            </FormField>
+          </>
+        )}
         {err && <div style={{ color: "#B5451B", fontSize: 13, marginBottom: 12 }}>{err}</div>}
         <button type="submit" disabled={busy} style={{ background: TEAL, color: "#fff", border: "none", borderRadius: 12, padding: "13px 26px", fontSize: 15, fontWeight: 700, fontFamily: FONT_BODY, cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }}>
           {busy ? "Recording…" : "Record contribution"}
