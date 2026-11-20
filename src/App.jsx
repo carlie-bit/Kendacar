@@ -4079,6 +4079,7 @@ function VotePanel({ req, votes, onChange }) {
   const [err, setErr] = useState("");
   const [composing, setComposing] = useState(false);
   const [note, setNote] = useState(req.vote_note || "");
+  const [okMsg, setOkMsg] = useState("");
 
   const tally = { approve: 0, discuss: 0, decline: 0, open: 0 };
   votes.forEach(v => { v.choice ? tally[v.choice]++ : tally.open++; });
@@ -4101,6 +4102,22 @@ function VotePanel({ req, votes, onChange }) {
         : e.message);
     } finally { setBusy(""); }
   }
+  // The same email, to the signed-in trustee alone, banner-marked as a test. Saves
+  // the note first so the test shows the note the family would actually read.
+  async function sendTest() {
+    setBusy("test"); setErr(""); setOkMsg("");
+    try {
+      if (req.vote_state === "none" && (note.trim() || "") !== (req.vote_note || "")) {
+        await authedWrite(session, setSession, "PATCH", "grant_requests?id=eq." + req.id, { vote_note: note.trim() || null });
+        onChange();
+      }
+      const out = await callFunction(session, setSession, "send-ballot", { request_id: req.id, test: true });
+      if (out.failed && out.failed.length) setErr("Couldn't send the test: " + out.failed.join("; "));
+      else setOkMsg("Test sent to " + (out.sent || []).join(", ") + " \u2014 nobody else got it, and no ballot was marked sent.");
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(""); }
+  }
+
   async function setState(next) {
     setBusy(next); setErr("");
     try { await authedWrite(session, setSession, "POST", "rpc/set_grant_vote_state", { p_request_id: req.id, p_state: next }); onChange(); }
@@ -4117,12 +4134,15 @@ function VotePanel({ req, votes, onChange }) {
             <textarea rows={2} value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. They asked us directly; the board meets Nov 15."
               style={{ ...formInput, fontSize: 14, padding: "9px 12px", resize: "vertical", marginBottom: 10 }} />
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <MiniButton kind="save" onClick={() => send(false)} disabled={busy === "send"}>{busy === "send" ? "Sending…" : "Send the ballots"}</MiniButton>
-              <MiniButton kind="cancel" onClick={() => setComposing(false)} disabled={busy === "send"}>Cancel</MiniButton>
+              <MiniButton kind="save" onClick={() => send(false)} disabled={!!busy}>{busy === "send" ? "Sending…" : "Send the ballots"}</MiniButton>
+              <MiniButton kind="edit" onClick={sendTest} disabled={!!busy}
+                title="The same email, to you alone, marked as a test">{busy === "test" ? "Sending…" : "Test it on me first"}</MiniButton>
+              <MiniButton kind="cancel" onClick={() => setComposing(false)} disabled={!!busy}>Cancel</MiniButton>
             </div>
             <div style={{ fontSize: 11.5, color: "#9B8E80", marginTop: 8, fontFamily: FONT_BODY }}>
               Each voter gets their own email with Approve, Let&rsquo;s discuss and Decline buttons. One click records it.
             </div>
+            {okMsg && <div style={{ color: "#1F7A5C", fontSize: 12.5, marginTop: 8, fontFamily: FONT_BODY, fontWeight: 700 }}>{okMsg}</div>}
             {err && <div style={{ color: "#B5451B", fontSize: 12.5, marginTop: 8, fontFamily: FONT_BODY }}>{err}</div>}
           </div>
         ) : (
@@ -4156,11 +4176,14 @@ function VotePanel({ req, votes, onChange }) {
         })}
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <button onClick={() => send(true)} disabled={busy === "send"} style={subAction(false)}>{busy === "send" ? "Sending…" : "Resend ballots"}</button>
+        <button onClick={() => send(true)} disabled={!!busy} style={subAction(false)}>{busy === "send" ? "Sending…" : "Resend ballots"}</button>
+        <button onClick={sendTest} disabled={!!busy} style={subAction(false)}
+          title="The same email, to you alone, marked as a test">{busy === "test" ? "Sending…" : "Test it on me"}</button>
         {req.vote_state === "hold" && <button onClick={() => setState("open")} disabled={busy === "open"} style={subAction(false)}>Discussed — reopen</button>}
         {req.vote_state !== "approved" && <button onClick={() => setState("approved")} disabled={busy === "approved"} style={subAction(false)}>Mark approved</button>}
-        <button onClick={() => setState("none")} disabled={busy === "none"} style={subAction(true)}>Close the vote</button>
+        <button onClick={() => setState("none")} disabled={!!busy} style={subAction(true)}>Close the vote</button>
       </div>
+      {okMsg && <div style={{ color: "#1F7A5C", fontSize: 12.5, marginTop: 8, fontFamily: FONT_BODY, fontWeight: 700 }}>{okMsg}</div>}
       {err && <div style={{ color: "#B5451B", fontSize: 12.5, marginTop: 8, fontFamily: FONT_BODY }}>{err}</div>}
     </div>
   );
